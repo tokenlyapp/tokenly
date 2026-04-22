@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; img-src 'self' data:;" />
+  <title>Tokenly</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png" />
+  <link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="node_modules/react/umd/react.development.js"></script>
+  <script src="node_modules/react-dom/umd/react-dom.development.js"></script>
+  <script src="node_modules/@babel/standalone/babel.min.js"></script>
+
+  <script src="app/components/tokens.js"></script>
+  <script type="text/babel" data-presets="react" src="app/components/atoms.jsx"></script>
+  <script type="text/babel" data-presets="react" src="app/components/ProviderCard.jsx"></script>
+  <script type="text/babel" data-presets="react" src="app/components/SettingsSheet.jsx"></script>
+  <script type="text/babel" data-presets="react" src="app/components/App.jsx"></script>
+  <script type="text/babel" data-presets="react">
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<LLMUsageApp />);
+  </script>
+</body>
+</html>

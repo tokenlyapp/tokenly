@@ -1,0 +1,45 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  background: #07070c;
+  color: #ecedf3;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', sans-serif;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
+::-webkit-scrollbar-track { background: transparent; }
+
+button { font-family: inherit; }
+input::placeholder { color: #5d6070; }
+
+@keyframes llmpulse {
+  0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 14px rgba(124, 92, 255, 0.7); }
+  50%      { transform: scale(1.18); opacity: 0.85; box-shadow: 0 0 20px rgba(124, 92, 255, 0.9); }
+}
+@keyframes llmspin { to { transform: rotate(360deg); } }
+@keyframes llmfade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes llmshimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+.llm-skel {
+  background: linear-gradient(90deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.09) 50%, rgba(255,255,255,0.03) 100%);
+  background-size: 200% 100%;
+  animation: llmshimmer 1.4s infinite;
+  display: block;
+}
+
+/* Accent-tinted skeleton: reads as "actively refreshing" rather than "empty". */
+.llm-skel-accent {
+  background: linear-gradient(90deg,
+    rgba(124,92,255,0.18) 0%,
+    rgba(124,92,255,0.42) 50%,
+    rgba(124,92,255,0.18) 100%);
+  background-size: 200% 100%;
+  animation: llmshimmer 1.1s infinite;
+  display: block;
+}

@@ -1,0 +1,825 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Tokenly — App Store Screenshots</title>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --card: rgba(255, 255, 255, 0.04);
+      --card-border: rgba(255, 255, 255, 0.07);
+      --text: #ecedf3;
+      --dim: #8a8c99;
+      --mute: #5d6070;
+      --accent: #7c5cff;
+      --cyan: #22d3ee;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #f87171;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+      -webkit-font-smoothing: antialiased;
+      background: #000;
+      color: var(--text);
+    }
+    body { padding: 40px 0; }
+    h2.label {
+      font-size: 13px; color: var(--dim); letter-spacing: 0.04em;
+      text-transform: uppercase; font-weight: 500;
+      max-width: 2880px; margin: 30px auto 12px; padding: 0 40px;
+    }
+
+    /* Each screenshot is exactly 2880×1800 — App Store retina macOS. */
+    .shot {
+      width: 2880px; height: 1800px; position: relative;
+      margin: 0 auto 60px;
+      overflow: hidden;
+      background-size: cover; background-position: center;
+    }
+    .shot::after {
+      content: ''; position: absolute; inset: 0;
+      background: radial-gradient(1200px 800px at 50% 30%, rgba(124,92,255,0.15), transparent 70%);
+      pointer-events: none;
+    }
+
+    /* Marketing caption overlays. */
+    .caption {
+      position: absolute; left: 120px; top: 120px;
+      max-width: 1100px; z-index: 10;
+    }
+    .caption .eyebrow {
+      font-size: 28px; color: var(--cyan); letter-spacing: 0.12em;
+      text-transform: uppercase; font-weight: 600; margin-bottom: 16px;
+    }
+    .caption h1 {
+      font-size: 96px; font-weight: 700; letter-spacing: -0.02em;
+      line-height: 1.05; color: var(--text);
+    }
+    .caption h1 .grad {
+      background: linear-gradient(135deg, #7c5cff, #22d3ee);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .caption p {
+      font-size: 30px; line-height: 1.5; color: var(--dim);
+      margin-top: 24px; max-width: 900px;
+    }
+
+    /* "App window" frame — mimics macOS with traffic lights and hiddenInset titlebar. */
+    .window {
+      position: absolute;
+      width: 920px; height: 1280px;
+      background: linear-gradient(180deg, #0b0b12 0%, #07070c 100%);
+      border-radius: 22px;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      box-shadow:
+        0 60px 180px rgba(0, 0, 0, 0.9),
+        0 20px 60px rgba(124, 92, 255, 0.12);
+      overflow: hidden;
+    }
+    .window::before {
+      content: ''; position: absolute; inset: 0;
+      background:
+        radial-gradient(1400px 600px at 50% -200px, rgba(124, 92, 255, 0.30), transparent 60%),
+        radial-gradient(800px 400px at 100% 0%, rgba(34, 211, 238, 0.15), transparent 55%);
+      pointer-events: none;
+    }
+    .traffic {
+      position: absolute; top: 28px; left: 28px;
+      display: flex; gap: 16px; z-index: 5;
+    }
+    .traffic span {
+      width: 24px; height: 24px; border-radius: 50%;
+      display: block;
+    }
+    .traffic .r { background: #ff5f57; }
+    .traffic .y { background: #ffbd2e; }
+    .traffic .g { background: #28c941; }
+
+    /* Inside the window */
+    .titlebar {
+      padding: 28px 24px 0 160px;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 80px;
+      position: relative; z-index: 4;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 16px;
+    }
+    .brand .dot {
+      width: 18px; height: 18px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--cyan));
+      box-shadow: 0 0 24px rgba(124, 92, 255, 0.8);
+    }
+    .brand .name { font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
+    .brand .sub  {
+      font-size: 22px; color: var(--mute);
+      font-variant-numeric: tabular-nums;
+    }
+    .brand .live {
+      background: rgba(52, 211, 153, 0.14);
+      color: var(--green);
+      font-size: 18px; font-weight: 700; letter-spacing: 0.04em;
+      padding: 4px 12px; border-radius: 20px;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .brand .live::before {
+      content: ''; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green);
+    }
+    .titlebar .actions { display: flex; gap: 12px; }
+    .titlebar .ic {
+      width: 56px; height: 56px; border-radius: 16px;
+      background: var(--card); border: 1px solid var(--card-border);
+      display: flex; align-items: center; justify-content: center;
+      color: var(--dim);
+    }
+
+    /* Range picker */
+    .range {
+      margin: 18px 28px 4px;
+      display: flex; background: rgba(0, 0, 0, 0.4);
+      border: 1px solid var(--card-border);
+      border-radius: 18px; padding: 4px; gap: 2px;
+      position: relative; z-index: 3;
+    }
+    .range span {
+      flex: 1; text-align: center; padding: 10px 0;
+      font-size: 21px; font-weight: 600; color: var(--dim);
+      border-radius: 14px; letter-spacing: -0.01em;
+      font-variant-numeric: tabular-nums;
+    }
+    .range span.active {
+      background: var(--accent); color: #fff;
+      box-shadow: 0 4px 16px rgba(124, 92, 255, 0.4);
+    }
+
+    /* Cards */
+    .cards {
+      padding: 14px 28px 28px;
+      display: flex; flex-direction: column; gap: 20px;
+      position: relative; z-index: 2;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 28px;
+      padding: 28px;
+      backdrop-filter: blur(20px);
+    }
+    .card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 20px;
+    }
+    .card-left { display: flex; align-items: center; gap: 20px; min-width: 0; }
+    .badge {
+      width: 56px; height: 56px; border-radius: 16px;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 22px; font-weight: 700; flex-shrink: 0;
+      letter-spacing: -0.02em;
+    }
+    .badge.claude    { background: linear-gradient(135deg, #ef9f6d, #d97757); }
+    .badge.codex     { background: linear-gradient(135deg, #22c9a0, #10a37f); }
+    .badge.openai    { background: linear-gradient(135deg, #10a37f, #0d8a6a); }
+    .badge.anthropic { background: linear-gradient(135deg, #d97757, #b85f3f); }
+    .badge.openrouter{ background: linear-gradient(135deg, #8a7fff, #5d4bff); }
+
+    .card-name { font-size: 26px; font-weight: 600; }
+    .card-tail { font-size: 20px; color: var(--dim); font-family: ui-monospace, Menlo, monospace; margin-top: 4px; }
+    .card-right { text-align: right; flex-shrink: 0; }
+    .card-primary {
+      font-size: 32px; font-weight: 700; letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+    }
+    .card-secondary {
+      font-size: 18px; color: var(--dim); margin-top: 4px;
+      font-variant-numeric: tabular-nums; font-weight: 500;
+    }
+    .card-secondary.amber { color: var(--amber); font-weight: 600; }
+    .status-dot {
+      display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+      background: var(--green); box-shadow: 0 0 10px rgba(52, 211, 153, 0.7);
+      margin-left: 12px;
+    }
+
+    /* Mini stats grid inside a card */
+    .ministats {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+      margin-top: 24px;
+    }
+    .ministat {
+      background: rgba(255, 255, 255, 0.025);
+      border: 1px solid var(--card-border);
+      border-radius: 16px; padding: 14px 18px;
+    }
+    .ministat-label {
+      font-size: 15px; color: var(--mute);
+      letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;
+    }
+    .ministat-value {
+      font-size: 26px; font-weight: 700; margin-top: 6px;
+      font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
+    }
+
+    /* Sparkline */
+    .spark {
+      margin-top: 16px; padding: 16px 20px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+    }
+    .spark-head {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 12px;
+    }
+    .spark-head .l {
+      font-size: 14px; color: var(--mute); letter-spacing: 0.08em;
+      text-transform: uppercase; font-weight: 600;
+    }
+    .spark-head .r {
+      font-size: 18px; color: var(--dim);
+      font-variant-numeric: tabular-nums;
+    }
+    .spark-bars { display: flex; align-items: flex-end; gap: 4px; height: 64px; }
+    .spark-bars i {
+      flex: 1;
+      background: linear-gradient(180deg, var(--accent) 0%, rgba(124, 92, 255, 0.35) 100%);
+      border-radius: 3px; display: block;
+    }
+
+    /* Model rows */
+    .models { margin-top: 20px; }
+    .model-row {
+      padding: 16px 0;
+      display: flex; justify-content: space-between; align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+    .model-row:last-child { border-bottom: 0; }
+    .model-name { font-size: 22px; font-weight: 600; }
+    .model-meta { font-size: 16px; color: var(--mute); margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .model-tok  { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .model-cost { font-size: 15px; color: var(--dim); margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+    /* Section header label inside the screenshot frame */
+    .footer-lockup {
+      position: absolute; bottom: 120px; left: 120px;
+      display: flex; align-items: center; gap: 24px;
+      z-index: 6;
+    }
+    .footer-lockup .ic {
+      width: 96px; height: 96px; border-radius: 24px;
+      background: linear-gradient(135deg, #7c5cff, #22d3ee);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 20px 60px rgba(124, 92, 255, 0.5);
+    }
+    .footer-lockup .ic::before {
+      content: 'T'; color: #fff; font-size: 56px; font-weight: 800;
+      font-family: -apple-system, sans-serif;
+    }
+    .footer-lockup .name {
+      font-size: 40px; font-weight: 700; letter-spacing: -0.01em;
+    }
+    .footer-lockup .tag {
+      font-size: 22px; color: var(--dim); margin-top: 2px;
+    }
+
+    /* Settings sheet shot — different layout */
+    .sheet {
+      position: absolute;
+      width: 920px; min-height: 720px;
+      background: linear-gradient(180deg, #15151f 0%, #0d0d14 100%);
+      border-radius: 28px 28px 0 0;
+      padding: 32px 40px 40px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    .sheet h3 { font-size: 28px; font-weight: 600; margin-bottom: 6px; }
+    .sheet .help { font-size: 18px; color: var(--dim); margin-bottom: 24px; }
+    .banner {
+      background: linear-gradient(135deg, rgba(251,191,36,0.12), rgba(124,92,255,0.10));
+      border: 1px solid rgba(251,191,36,0.28);
+      border-radius: 20px; padding: 20px 24px; margin-bottom: 28px;
+      display: flex; gap: 16px;
+    }
+    .banner .i {
+      width: 40px; height: 40px; border-radius: 12px;
+      background: rgba(251,191,36,0.18); color: var(--amber);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 24px; font-weight: 800;
+    }
+    .banner .t { font-size: 22px; font-weight: 600; }
+    .banner .d { font-size: 17px; color: var(--dim); margin-top: 6px; line-height: 1.5; }
+    .keyrow {
+      background: var(--card); border: 1px solid var(--card-border);
+      border-radius: 20px; padding: 20px 24px; margin-bottom: 14px;
+    }
+    .keyrow .h { display: flex; align-items: center; justify-content: space-between; }
+    .keyrow .b { display: flex; align-items: center; gap: 12px; font-size: 22px; font-weight: 600; }
+    .keyrow .b .miniBadge {
+      width: 36px; height: 36px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 14px; font-weight: 700;
+    }
+    .keyrow .admin {
+      font-size: 13px; font-weight: 700;
+      color: var(--amber); background: rgba(251,191,36,0.12);
+      border: 1px solid rgba(251,191,36,0.3);
+      padding: 4px 10px; border-radius: 6px; text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .keyrow .saved {
+      font-size: 16px; color: var(--green);
+      display: flex; align-items: center; gap: 6px;
+      font-family: ui-monospace, Menlo, monospace;
+    }
+    .keyrow .desc { font-size: 15px; color: var(--mute); margin: 10px 0 16px; line-height: 1.5; }
+    .keyrow .input {
+      display: flex; gap: 10px;
+    }
+    .keyrow .input > input {
+      flex: 1; background: rgba(0,0,0,0.3);
+      border: 1px solid var(--card-border); border-radius: 12px;
+      color: var(--text); padding: 14px 18px;
+      font-size: 18px; font-family: ui-monospace, Menlo, monospace;
+    }
+    .keyrow .input > button {
+      padding: 0 24px; border: 0; border-radius: 12px;
+      background: var(--accent); color: #fff; font-weight: 600;
+      font-size: 18px; cursor: pointer;
+    }
+
+    /* ------- SHOT 1: Hero ------- */
+    .shot.hero {
+      background: radial-gradient(1800px 1200px at 30% 20%, #14142a 0%, #05050a 100%);
+    }
+    .shot.hero .caption {
+      left: 1640px; top: 280px; max-width: 1160px;
+    }
+    .shot.hero .window {
+      top: 180px; left: 220px;
+    }
+
+    /* ------- SHOT 2: Menu bar popover ------- */
+    .shot.menubar {
+      background: linear-gradient(180deg, #1a1a2e 0%, #0e0e1a 60%, #05050a 100%);
+    }
+    .shot.menubar .caption { left: 180px; top: 260px; }
+    .macbar {
+      position: absolute; top: 0; left: 0; right: 0; height: 48px;
+      background: rgba(20, 20, 30, 0.8);
+      backdrop-filter: blur(30px);
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      display: flex; align-items: center; padding: 0 24px;
+      z-index: 5;
+    }
+    .macbar .app { color: #fff; font-weight: 600; font-size: 17px; margin-right: auto; }
+    .macbar .icons { display: flex; gap: 20px; align-items: center; }
+    .macbar .icons span {
+      color: #fff; opacity: 0.8; font-size: 16px;
+    }
+    .macbar .icons .ttray {
+      color: #fff; font-weight: 800; font-size: 20px;
+      font-family: -apple-system, sans-serif;
+    }
+    .shot.menubar .window {
+      top: 110px; right: 160px; left: auto;
+    }
+    .shot.menubar .window::after {
+      content: ''; position: absolute;
+      top: -12px; right: 320px;
+      width: 0; height: 0;
+      border-left: 14px solid transparent;
+      border-right: 14px solid transparent;
+      border-bottom: 14px solid #0b0b12;
+    }
+
+    /* ------- SHOT 3: Claude Code close-up ------- */
+    .shot.claudeshot {
+      background: radial-gradient(1200px 900px at 70% 40%, #2a1f35 0%, #0e0812 100%);
+    }
+    .shot.claudeshot .caption { left: 120px; top: 220px; max-width: 900px; }
+    .shot.claudeshot .window {
+      width: 1200px; height: 1240px;
+      top: 260px; right: 120px; left: auto;
+    }
+
+    /* ------- SHOT 4: Range picker ------- */
+    .shot.rangeshot {
+      background: radial-gradient(1400px 1000px at 20% 70%, #18223a 0%, #05070f 100%);
+    }
+    .shot.rangeshot .caption { left: 1560px; top: 300px; max-width: 1200px; }
+    .shot.rangeshot .window { top: 200px; left: 200px; }
+    .shot.rangeshot .range span { padding: 20px 0; font-size: 32px; }
+    .shot.rangeshot .range { margin: 24px 28px; border-radius: 22px; padding: 6px; }
+
+    /* ------- SHOT 5: Settings sheet ------- */
+    .shot.settingsshot {
+      background: radial-gradient(1400px 1000px at 30% 20%, #251a35 0%, #08050e 100%);
+    }
+    .shot.settingsshot .caption { left: 1640px; top: 280px; max-width: 1160px; }
+    .shot.settingsshot .window {
+      top: 220px; left: 220px;
+    }
+  </style>
+</head>
+<body>
+
+<h2 class="label">Shot 1 — Hero (2880 × 1800)</h2>
+<div class="shot hero">
+  <div class="caption">
+    <div class="eyebrow">The AI usage dashboard that lives in your menu bar</div>
+    <h1>Every token.<br/>Every model.<br/><span class="grad">One glance.</span></h1>
+    <p>Real-time spend across Claude Code, Codex, OpenAI, Anthropic, and OpenRouter — all in your Mac menu bar. Keys stay on your machine.</p>
+  </div>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+    <div class="titlebar">
+      <div class="brand">
+        <div class="dot"></div>
+        <div class="name">Tokenly</div>
+        <div class="sub">· Last 30 days</div>
+        <div class="live">just now</div>
+      </div>
+      <div class="actions"><div class="ic">↻</div><div class="ic">⚙</div></div>
+    </div>
+    <div class="range">
+      <span>24h</span><span>7d</span><span>14d</span><span class="active">30d</span><span>90d</span><span>180d</span>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge claude">CC</div>
+            <div><div class="card-name">Claude Code</div><div class="card-tail">local · real-time</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">12.4M tok</div>
+            <div class="card-secondary amber">≈ $520.00 est.</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+        <div class="ministats">
+          <div class="ministat"><div class="ministat-label">Input</div><div class="ministat-value">57K</div></div>
+          <div class="ministat"><div class="ministat-label">Output</div><div class="ministat-value">1.5M</div></div>
+          <div class="ministat"><div class="ministat-label">Cache Write</div><div class="ministat-value">12.8M</div></div>
+          <div class="ministat"><div class="ministat-label">Cache Read</div><div class="ministat-value">479M</div></div>
+        </div>
+        <div class="spark">
+          <div class="spark-head"><div class="l">Daily tokens</div><div class="r">avg 410K</div></div>
+          <div class="spark-bars">
+            <i style="height:10%"></i><i style="height:22%"></i><i style="height:45%"></i><i style="height:28%"></i>
+            <i style="height:60%"></i><i style="height:8%"></i><i style="height:42%"></i><i style="height:75%"></i>
+            <i style="height:38%"></i><i style="height:90%"></i><i style="height:52%"></i><i style="height:65%"></i>
+            <i style="height:100%"></i><i style="height:44%"></i>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge codex">CX</div>
+            <div><div class="card-name">Codex</div><div class="card-tail">local · real-time</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">500M tok</div>
+            <div class="card-secondary amber">≈ $266.64 est.</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge openai">AI</div>
+            <div><div class="card-name">OpenAI API</div><div class="card-tail">•••• kX9a</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">$45.22</div>
+            <div class="card-secondary">actual spend · 2.1M tok</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge anthropic">AN</div>
+            <div><div class="card-name">Anthropic API</div><div class="card-tail">•••• a4B2</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">$8.44</div>
+            <div class="card-secondary">actual spend · 985K tok</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2 class="label">Shot 2 — Menu bar popover</h2>
+<div class="shot menubar">
+  <div class="macbar">
+    <span class="app">Terminal</span>
+    <div class="icons">
+      <span class="ttray">T</span>
+      <span>⚡</span><span>🔋</span><span>▣</span><span>☰</span><span>🔍</span><span>👤</span>
+      <span>Tue Apr 21&nbsp;&nbsp;4:41 PM</span>
+    </div>
+  </div>
+  <div class="caption">
+    <div class="eyebrow">Always-on, never intrusive</div>
+    <h1>Right in your<br/><span class="grad">menu bar.</span></h1>
+    <p>Click the Tokenly icon to peek at your spend. Detach for a floating desktop window. Never opens an app switcher you didn't ask for.</p>
+  </div>
+  <div class="window">
+    <div class="traffic" style="opacity:0.4"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+    <div class="titlebar">
+      <div class="brand">
+        <div class="dot"></div>
+        <div class="name">Tokenly</div>
+        <div class="sub">· Last 7 days</div>
+      </div>
+      <div class="actions"><div class="ic">↻</div><div class="ic">⚙</div></div>
+    </div>
+    <div class="range">
+      <span>24h</span><span class="active">7d</span><span>14d</span><span>30d</span><span>90d</span><span>180d</span>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge claude">CC</div>
+            <div><div class="card-name">Claude Code</div><div class="card-tail">local · real-time</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">3.1M tok</div>
+            <div class="card-secondary amber">≈ $128.22 est.</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge codex">CX</div>
+            <div><div class="card-name">Codex</div><div class="card-tail">local · real-time</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">124M tok</div>
+            <div class="card-secondary amber">≈ $68.40 est.</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge openai">AI</div>
+            <div><div class="card-name">OpenAI API</div><div class="card-tail">•••• kX9a</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">$12.08</div>
+            <div class="card-secondary">actual spend · 480K tok</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge anthropic">AN</div>
+            <div><div class="card-name">Anthropic API</div><div class="card-tail">•••• a4B2</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">$2.31</div>
+            <div class="card-secondary">actual spend · 310K tok</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge openrouter">OR</div>
+            <div><div class="card-name">OpenRouter</div><div class="card-tail">•••• p9Lm</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">$4.92</div>
+            <div class="card-secondary">actual spend · 128K tok</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2 class="label">Shot 3 — Claude Code close-up</h2>
+<div class="shot claudeshot">
+  <div class="caption">
+    <div class="eyebrow">Zero-setup Claude tracking</div>
+    <h1>Sees what your<br/>API dashboard<br/><span class="grad">can't.</span></h1>
+    <p>Tokenly reads Claude Code's local logs directly — so it captures every token Claude consumed under your Max or Pro subscription, not just pay-as-you-go API calls.</p>
+  </div>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+    <div class="titlebar">
+      <div class="brand">
+        <div class="dot"></div>
+        <div class="name">Tokenly</div>
+        <div class="sub">· Last 30 days</div>
+        <div class="live">just now</div>
+      </div>
+      <div class="actions"><div class="ic">↻</div><div class="ic">⚙</div></div>
+    </div>
+    <div class="cards" style="padding: 28px">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge claude" style="width:64px;height:64px;border-radius:18px;font-size:26px">CC</div>
+            <div>
+              <div class="card-name" style="font-size:32px">Claude Code</div>
+              <div class="card-tail" style="font-size:22px">local · real-time</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary" style="font-size:42px">12.4M tok</div>
+            <div class="card-secondary amber" style="font-size:22px">≈ $520.00 est.</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+        <div class="ministats" style="grid-template-columns:repeat(4,1fr);gap:16px;margin-top:32px">
+          <div class="ministat"><div class="ministat-label">Input</div><div class="ministat-value">57K</div></div>
+          <div class="ministat"><div class="ministat-label">Output</div><div class="ministat-value">1.5M</div></div>
+          <div class="ministat"><div class="ministat-label">Cache Write</div><div class="ministat-value">12.8M</div></div>
+          <div class="ministat"><div class="ministat-label">Cache Read</div><div class="ministat-value">479M</div></div>
+        </div>
+        <div class="spark" style="margin-top: 24px;">
+          <div class="spark-head"><div class="l">Daily tokens</div><div class="r">avg 410K</div></div>
+          <div class="spark-bars" style="height:90px">
+            <i style="height:10%"></i><i style="height:22%"></i><i style="height:45%"></i><i style="height:28%"></i>
+            <i style="height:60%"></i><i style="height:8%"></i><i style="height:42%"></i><i style="height:75%"></i>
+            <i style="height:38%"></i><i style="height:90%"></i><i style="height:52%"></i><i style="height:65%"></i>
+            <i style="height:100%"></i><i style="height:44%"></i><i style="height:62%"></i><i style="height:35%"></i>
+            <i style="height:72%"></i><i style="height:50%"></i><i style="height:84%"></i><i style="height:28%"></i>
+          </div>
+        </div>
+        <div class="models">
+          <div class="model-row">
+            <div><div class="model-name">claude-opus-4-7</div>
+              <div class="model-meta">in 20K · out 1.2M · cw 9.5M · cr 378M</div></div>
+            <div style="text-align:right"><div class="model-tok">388M</div>
+              <div class="model-cost">$315.71</div></div>
+          </div>
+          <div class="model-row">
+            <div><div class="model-name">claude-sonnet-4-6</div>
+              <div class="model-meta">in 22K · out 227K · cw 2.0M · cr 86M</div></div>
+            <div style="text-align:right"><div class="model-tok">88M</div>
+              <div class="model-cost">$204.09</div></div>
+          </div>
+          <div class="model-row">
+            <div><div class="model-name">claude-haiku-4-5</div>
+              <div class="model-meta">in 14K · out 34K · cw 1.3M · cr 16M</div></div>
+            <div style="text-align:right"><div class="model-tok">18M</div>
+              <div class="model-cost">$3.42</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2 class="label">Shot 4 — Range picker</h2>
+<div class="shot rangeshot">
+  <div class="caption">
+    <div class="eyebrow">Any window, any time</div>
+    <h1>From 24 hours<br/>to <span class="grad">180 days.</span></h1>
+    <p>Each card recalculates instantly. Swap ranges, compare days, watch a single spike unfold.</p>
+  </div>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+    <div class="titlebar">
+      <div class="brand">
+        <div class="dot"></div>
+        <div class="name">Tokenly</div>
+        <div class="sub">· Last 180 days</div>
+      </div>
+      <div class="actions"><div class="ic">↻</div><div class="ic">⚙</div></div>
+    </div>
+    <div class="range">
+      <span>24h</span><span>7d</span><span>14d</span><span>30d</span><span>90d</span><span class="active">180d</span>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge claude">CC</div>
+            <div><div class="card-name">Claude Code</div><div class="card-tail">local · real-time</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">68.2M tok</div>
+            <div class="card-secondary amber">≈ $2,845 est.</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge codex">CX</div>
+            <div><div class="card-name">Codex</div><div class="card-tail">local · real-time</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">2.1B tok</div>
+            <div class="card-secondary amber">≈ $1,218 est.</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge openai">AI</div>
+            <div><div class="card-name">OpenAI API</div><div class="card-tail">•••• kX9a</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">$287.40</div>
+            <div class="card-secondary">actual spend · 14.2M tok</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-left">
+            <div class="badge anthropic">AN</div>
+            <div><div class="card-name">Anthropic API</div><div class="card-tail">•••• a4B2</div></div>
+          </div>
+          <div style="display:flex;align-items:center;"><div class="card-right">
+            <div class="card-primary">$52.18</div>
+            <div class="card-secondary">actual spend · 8.1M tok</div>
+          </div><span class="status-dot"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2 class="label">Shot 5 — Settings / keys</h2>
+<div class="shot settingsshot">
+  <div class="caption">
+    <div class="eyebrow">Privacy-first by design</div>
+    <h1>Keys stay<br/><span class="grad">on your Mac.</span></h1>
+    <p>Every API key is encrypted by the macOS keychain. Nothing ever leaves your machine except direct calls to the providers you asked for.</p>
+  </div>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+    <div class="titlebar">
+      <div class="brand">
+        <div class="dot"></div>
+        <div class="name">Tokenly</div>
+        <div class="sub">· API Keys</div>
+      </div>
+      <div class="actions"><div class="ic">✕</div></div>
+    </div>
+    <div style="padding: 30px;">
+      <div class="banner">
+        <div class="i">!</div>
+        <div>
+          <div class="t">Admin API keys required</div>
+          <div class="d">Usage and cost endpoints only accept <span style="font-family:ui-monospace">sk-admin-…</span> (OpenAI) and <span style="font-family:ui-monospace">sk-ant-admin01-…</span> (Anthropic) keys. Regular project keys return 401/403.</div>
+        </div>
+      </div>
+
+      <div class="keyrow">
+        <div class="h">
+          <div class="b">
+            <div class="miniBadge openai" style="background: linear-gradient(135deg,#10a37f,#0d8a6a);">AI</div>
+            OpenAI API
+            <span class="admin">ADMIN KEY</span>
+          </div>
+          <div class="saved">✓ Saved ••••kX9a</div>
+        </div>
+        <div class="desc">Platform → Organization → Admin keys. Must be an org owner. Regular project keys will 403.</div>
+      </div>
+
+      <div class="keyrow">
+        <div class="h">
+          <div class="b">
+            <div class="miniBadge" style="background: linear-gradient(135deg,#d97757,#b85f3f);">AN</div>
+            Anthropic API
+            <span class="admin">ADMIN KEY</span>
+          </div>
+          <div class="saved">✓ Saved ••••a4B2</div>
+        </div>
+        <div class="desc">Console → Settings → Admin Keys. Requires Primary Owner. Regular sk-ant-api- keys cannot read usage/cost reports.</div>
+      </div>
+
+      <div class="keyrow">
+        <div class="h">
+          <div class="b">
+            <div class="miniBadge" style="background: linear-gradient(135deg,#8a7fff,#5d4bff);">OR</div>
+            OpenRouter
+            <span class="admin">MANAGEMENT KEY</span>
+          </div>
+        </div>
+        <div class="desc">A Management key from OpenRouter → Settings → Management Keys. Delayed data: aggregates per completed UTC day.</div>
+        <div class="input">
+          <input value="sk-or-v1-•••••••••••••••" readonly />
+          <button>Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

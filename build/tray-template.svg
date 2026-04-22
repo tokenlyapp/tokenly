@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <!-- Template image — pure black, auto-tinted by macOS. Glyph sits inside an 18×18 safe area. -->
+  <g fill="#000000">
+    <!-- T crossbar -->
+    <rect x="5" y="4.5" width="12" height="3" rx="1.5" ry="1.5"/>
+    <!-- T stem -->
+    <rect x="9.5" y="4.5" width="3" height="11" rx="1.5" ry="1.5"/>
+    <!-- Pulse dot -->
+    <circle cx="11" cy="17.5" r="1.7"/>
+  </g>
+</svg>

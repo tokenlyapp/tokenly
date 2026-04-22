@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Squircle-style rounded square (macOS continuous corners) -->
+    <clipPath id="squircle">
+      <path d="M512 0 C 832 0, 1024 192, 1024 512 S 832 1024, 512 1024 S 0 832, 0 512 S 192 0, 512 0 Z"/>
+    </clipPath>
+
+    <!-- Background: deep indigo to near-black -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#121028"/>
+      <stop offset="1" stop-color="#05060b"/>
+    </linearGradient>
+
+    <!-- Soft violet→cyan glow behind the mark -->
+    <radialGradient id="glow" cx="512" cy="420" r="540" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7c5cff" stop-opacity="0.55"/>
+      <stop offset="0.45" stop-color="#22d3ee" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Mark gradient: violet → cyan -->
+    <linearGradient id="mark" x1="340" y1="300" x2="720" y2="760" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8d72ff"/>
+      <stop offset="0.55" stop-color="#7c5cff"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+
+    <!-- Inner mark highlight -->
+    <radialGradient id="markHi" cx="430" cy="360" r="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Everything clipped to the squircle -->
+  <g clip-path="url(#squircle)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <rect width="1024" height="1024" fill="url(#glow)"/>
+
+    <!-- Subtle grid of pulse rings, concentric from center -->
+    <g fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="2">
+      <circle cx="512" cy="512" r="180"/>
+      <circle cx="512" cy="512" r="260"/>
+      <circle cx="512" cy="512" r="340"/>
+      <circle cx="512" cy="512" r="420"/>
+    </g>
+
+    <!-- T mark -->
+    <g>
+      <!-- Crossbar of the T -->
+      <rect x="296" y="296" width="432" height="112" rx="56" ry="56" fill="url(#mark)"/>
+      <!-- Vertical stem of the T -->
+      <rect x="456" y="296" width="112" height="472" rx="56" ry="56" fill="url(#mark)"/>
+      <!-- Highlight pass -->
+      <rect x="296" y="296" width="432" height="112" rx="56" ry="56" fill="url(#markHi)" opacity="0.9"/>
+      <rect x="456" y="296" width="112" height="472" rx="56" ry="56" fill="url(#markHi)" opacity="0.6"/>
+
+      <!-- Pulse dot at the foot of the stem — signature "live" indicator -->
+      <circle cx="512" cy="820" r="56" fill="#22d3ee"/>
+      <circle cx="512" cy="820" r="56" fill="url(#markHi)"/>
+      <!-- Halo around the pulse -->
+      <circle cx="512" cy="820" r="92" fill="none" stroke="#22d3ee" stroke-opacity="0.35" stroke-width="6"/>
+      <circle cx="512" cy="820" r="128" fill="none" stroke="#22d3ee" stroke-opacity="0.15" stroke-width="4"/>
+    </g>
+
+    <!-- Fine inner bevel to give the icon material weight on macOS -->
+    <path d="M512 0 C 832 0, 1024 192, 1024 512 S 832 1024, 512 1024 S 0 832, 0 512 S 192 0, 512 0 Z"
+          fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="2"/>
+  </g>
+</svg>

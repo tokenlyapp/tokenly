@@ -1,0 +1,106 @@
+{
+  "name": "tokenly",
+  "productName": "Tokenly",
+  "version": "1.2.0",
+  "description": "Tokenly — live monitor for your AI API spend across OpenAI, Anthropic, DeepSeek, and OpenRouter.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:publish": "electron-builder --publish always"
+  },
+  "build": {
+    "appId": "app.tokenly.desktop",
+    "productName": "Tokenly",
+    "copyright": "© 2026 Tokenly",
+    "asar": true,
+    "files": [
+      "**/*",
+      "!marketing/**",
+      "!build/icon.iconset/**",
+      "!build/*.svg",
+      "!**/.DS_Store",
+      "!**/*.md",
+      "build/tray-template.png",
+      "build/tray-template@2x.png"
+    ],
+    "extraResources": [
+      {
+        "from": "build/tray-template.png",
+        "to": "tray-template.png"
+      },
+      {
+        "from": "build/tray-template@2x.png",
+        "to": "tray-template@2x.png"
+      }
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ]
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "PUT_YOUR_GITHUB_USERNAME_HERE",
+        "repo": "tokenly",
+        "private": false,
+        "releaseType": "release"
+      }
+    ],
+    "dmg": {
+      "title": "Tokenly ${version}",
+      "icon": "icon.icns",
+      "iconSize": 100,
+      "contents": [
+        {
+          "x": 140,
+          "y": 200,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "@babel/standalone": "^7.29.2",
+    "electron-updater": "^6.8.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}
