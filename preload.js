@@ -10,4 +10,5 @@ contextBridge.exposeInMainWorld('api', {
   onRefreshNow: (cb) => ipcRenderer.on('refresh-now', cb),
   mode: () => (typeof location !== 'undefined' && location.hash === '#desktop' ? 'desktop' : 'popover'),
   revealDiagnostic: () => ipcRenderer.invoke('diagnostic:reveal'),
+  setTrayTitle: (title) => ipcRenderer.invoke('tray:set-title', title),
 });

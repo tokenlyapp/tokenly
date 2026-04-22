@@ -312,6 +312,15 @@ ipcMain.handle('window:minimize-to-tray', () => {
 });
 ipcMain.handle('window:open-popover', () => togglePopover());
 
+ipcMain.handle('tray:set-title', (_e, title) => {
+  if (!tray) return;
+  try {
+    tray.setTitle(typeof title === 'string' ? title : '');
+  } catch (err) {
+    console.error('[tray] setTitle failed:', err?.message || err);
+  }
+});
+
 ipcMain.handle('diagnostic:reveal', () => {
   const dir = app.getPath('userData');
   shell.openPath(dir);

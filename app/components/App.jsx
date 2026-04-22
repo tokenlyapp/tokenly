@@ -20,11 +20,29 @@ function LLMUsageApp() {
   const [lastRefreshedAt, setLastRefreshedAt] = useStateA(null);
   const [nowTick, setNowTick] = useStateA(Date.now());
   const [badgeStyle, setBadgeStyle] = useStateA(() => {
-    try { return localStorage.getItem('badgeStyle') || 'monogram'; } catch { return 'monogram'; }
+    // Default to brand logos — users recognize the real marks faster than initials.
+    try { return localStorage.getItem('badgeStyle') || 'logo'; } catch { return 'logo'; }
   });
   const updateBadgeStyle = (v) => {
     setBadgeStyle(v);
     try { localStorage.setItem('badgeStyle', v); } catch {}
+  };
+
+  // Two-axis tray display: which provider (source) × which period (mode).
+  // Both persist to localStorage.
+  const [trayMode, setTrayMode] = useStateA(() => {
+    try { return localStorage.getItem('trayMode') || localStorage.getItem('trayDisplay') || 'off'; } catch { return 'off'; }
+  });
+  const updateTrayMode = (v) => {
+    setTrayMode(v);
+    try { localStorage.setItem('trayMode', v); } catch {}
+  };
+  const [traySource, setTraySource] = useStateA(() => {
+    try { return localStorage.getItem('traySource') || 'all'; } catch { return 'all'; }
+  });
+  const updateTraySource = (v) => {
+    setTraySource(v);
+    try { localStorage.setItem('traySource', v); } catch {}
   };
 
   const t = TOKENS.color;
@@ -113,6 +131,17 @@ function LLMUsageApp() {
   useEffectA(() => {
     if (window.api?.onRefreshNow) window.api.onRefreshNow(() => refreshAll());
   }, [refreshAll]);
+
+  // Keep the menu-bar title synced with aggregated tokens whenever usage, mode,
+  // or source changes. Small debounce so rapid usage updates don't spam IPC.
+  useEffectA(() => {
+    if (!window.api?.setTrayTitle) return;
+    const handle = setTimeout(() => {
+      const title = computeTrayTitle(trayMode, traySource, usage);
+      window.api.setTrayTitle(title);
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [trayMode, traySource, usage]);
 
   const keysPresent = Object.values(meta).some((m) => m?.present);
   const isFirstRun = booted && !keysPresent;
@@ -281,12 +310,80 @@ function LLMUsageApp() {
         onOpenExternal={onOpenExternal}
         badgeStyle={badgeStyle}
         onBadgeStyleChange={updateBadgeStyle}
+        trayMode={trayMode}
+        onTrayModeChange={updateTrayMode}
+        traySource={traySource}
+        onTraySourceChange={updateTraySource}
+        currentDays={days}
       />
     </div>
     </BadgeStyleContext.Provider>
   );
 }
 window.LLMUsageApp = LLMUsageApp;
+
+// Aggregate TOKEN counts for the menu-bar title.
+//   mode   — 'off' | 'today' | 'window' | 'hybrid'
+//   source — 'all' or a provider id like 'claude-code'
+//
+// Semantics:
+//   Today     = tokens consumed since 00:00 UTC today (UTC calendar day).
+//               Pulled from the last bar of each provider's trend array.
+//   Last Xd   = tokens in the popover's selected rolling window.
+//               Uses totals with the SAME formula as the card's rightSide
+//               label (input + output + cache_read + cached), so the tray
+//               and card agree exactly when the same source is selected.
+function computeTrayTitle(mode, source, usage) {
+  if (!mode || mode === 'off') return '';
+
+  const providerList = (source === 'all')
+    ? PROVIDERS
+    : PROVIDERS.filter((p) => p.id === source);
+
+  // Match the card's rightSide formula exactly.
+  const cardTokens = (t) =>
+      (t.input      || 0)
+    + (t.output     || 0)
+    + (t.cache_read || 0)
+    + (t.cached     || 0);
+
+  let windowTotal = 0;
+  let todayTotal = 0;
+  for (const p of providerList) {
+    const u = usage[p.id];
+    if (!u || u === 'loading' || !u.ok || !u.data) continue;
+    const t = u.data.totals || {};
+
+    // "Last Xd" uses the exact same formula the card displays.
+    windowTotal += cardTokens(t);
+
+    // "Today" = last UTC-day bucket from the trend. Note: trend buckets are
+    // provider-specific (each provider includes slightly different token
+    // categories in its trend), so "Today" is close but not identical to a
+    // card slice. "Today" is intentionally UTC-calendar-day-so-far.
+    const trend = u.data.trend || [];
+    if (trend.length) {
+      todayTotal += trend[trend.length - 1] || 0;
+    }
+  }
+
+  const fmt = (n) => {
+    if (!Number.isFinite(n) || n < 0) return '0';
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(Math.round(n));
+  };
+
+  const tag = (source === 'all')
+    ? ''
+    : (PROVIDERS.find((p) => p.id === source)?.abbr || '') + ' ';
+
+  if (mode === 'today')  return ' ' + tag + fmt(todayTotal);
+  if (mode === 'window') return ' ' + tag + fmt(windowTotal);
+  if (mode === 'hybrid') return ' ' + tag + fmt(todayTotal) + ' / ' + fmt(windowTotal);
+  return '';
+}
 
 function timeAgo(ms) {
   if (ms == null || ms < 0) return 'now';

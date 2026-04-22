@@ -475,9 +475,15 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
               }}>{Icons.caret}</div>
             </div>
             <div style={{ fontSize: 10.5, color: t.textDim, marginTop: 1, fontFamily: TOKENS.type.mono }}>
-              {provider.keyless
-                ? (data?.present ? 'local · real-time' : 'not detected')
-                : (data?.present ? `•••• ${data.tail}` : 'No key')}
+              {(() => {
+                // Provider-specific subtitles. Keyless providers show what's
+                // being tracked locally; keyed providers show the masked key tail.
+                if (provider.id === 'claude-code') return data?.present ? 'CLI + Desktop · real-time' : 'not detected';
+                if (provider.id === 'codex')       return data?.present ? 'CLI + Desktop · real-time' : 'not detected';
+                if (provider.id === 'gemini-cli')  return data?.present ? 'CLI · real-time' : 'not detected';
+                if (provider.keyless)              return data?.present ? 'local · real-time' : 'not detected';
+                return data?.present ? `•••• ${data.tail}` : 'No key';
+              })()}
             </div>
           </div>
         </div>

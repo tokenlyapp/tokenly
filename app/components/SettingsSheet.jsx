@@ -1,7 +1,17 @@
 // Settings sheet — slides up from bottom with API key rows.
 const { useState: useStateS } = React;
 
-function SettingsSheet({ open, onClose, savedKeys = {}, onSave, onRemove, onOpenExternal, badgeStyle = 'monogram', onBadgeStyleChange }) {
+function SettingsSheet({
+  open, onClose, savedKeys = {}, onSave, onRemove, onOpenExternal,
+  badgeStyle = 'monogram', onBadgeStyleChange,
+  trayMode = 'off', onTrayModeChange,
+  traySource = 'all', onTraySourceChange,
+  currentDays = 30,
+}) {
+  // Human label for the current window: "24h" / "7d" / "Last 30d" etc.
+  const rangeShort = {
+    1: '24h', 7: '7d', 14: '14d', 30: '30d', 90: '90d', 180: '180d',
+  }[currentDays] || (currentDays + 'd');
   const t = TOKENS.color;
   const [revealed, setRevealed] = useStateS({});
   const [drafts, setDrafts] = useStateS({});
@@ -128,6 +138,91 @@ function SettingsSheet({ open, onClose, savedKeys = {}, onSave, onRemove, onOpen
             {PROVIDERS.map((p) => (
               <ProviderBadge key={p.id} id={p.id} size={28} radius={7} />
             ))}
+          </div>
+        </div>
+
+        {/* Menu bar tokens — dual control: which source, which period */}
+        <div style={{
+          background: t.card, border: `1px solid ${t.cardBorder}`,
+          borderRadius: 10, padding: '12px 14px', marginBottom: 12,
+        }}>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>Menu bar tokens</div>
+            <div style={{ fontSize: 10, color: t.textMute, marginTop: 2, lineHeight: 1.45 }}>
+              Show a live token count next to the Tokenly icon. Pick which provider and which time window.
+            </div>
+          </div>
+
+          {/* Source dropdown */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: t.textDim, flexShrink: 0, width: 48 }}>Source</div>
+            <select
+              value={traySource}
+              onChange={(e) => onTraySourceChange && onTraySourceChange(e.target.value)}
+              style={{
+                flex: 1,
+                appearance: 'none', WebkitAppearance: 'none',
+                background: 'rgba(0,0,0,0.3)',
+                border: `1px solid ${t.cardBorder}`,
+                color: t.text, borderRadius: 7, padding: '6px 10px',
+                fontSize: 11, fontWeight: 500, cursor: 'pointer',
+                fontFamily: 'inherit', outline: 'none',
+              }}
+            >
+              <option value="all">All providers</option>
+              <optgroup label="Local tools (subscription-bundled)">
+                {PROVIDERS.filter((p) => p.keyless).map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </optgroup>
+              <optgroup label="API billing (pay-as-you-go)">
+                {PROVIDERS.filter((p) => !p.keyless).map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </optgroup>
+            </select>
+          </div>
+
+          {/* Period segmented control */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ fontSize: 11, color: t.textDim, flexShrink: 0, width: 48 }}>Period</div>
+            <div style={{
+              flex: 1,
+              display: 'flex', background: 'rgba(0,0,0,0.3)',
+              border: `1px solid ${t.cardBorder}`, borderRadius: 7, padding: 2, gap: 1,
+            }}>
+              {[
+                { v: 'off',    label: 'Off' },
+                { v: 'today',  label: 'Today' },
+                { v: 'window', label: `Last ${rangeShort}` },
+                { v: 'hybrid', label: 'Both' },
+              ].map((opt) => {
+                const active = trayMode === opt.v;
+                return (
+                  <button
+                    key={opt.v}
+                    onClick={() => onTrayModeChange && onTrayModeChange(opt.v)}
+                    style={{
+                      flex: 1,
+                      background: active ? t.accent : 'transparent',
+                      color: active ? '#fff' : t.textDim,
+                      border: 0, padding: '5px 8px', borderRadius: 6,
+                      fontSize: 10.5, fontWeight: 500, cursor: 'pointer',
+                      fontFamily: 'inherit',
+                      fontVariantNumeric: 'tabular-nums',
+                      transition: 'background .15s, color .15s',
+                      whiteSpace: 'nowrap',
+                    }}
+                    title={
+                      opt.v === 'today'  ? 'Tokens consumed since 00:00 UTC today.' :
+                      opt.v === 'window' ? `Rolling total for the last ${rangeShort}. Matches what the card shows for the selected source.` :
+                      opt.v === 'hybrid' ? `Today (since 00:00 UTC) / Last ${rangeShort}` :
+                      'Hide the token count'
+                    }
+                  >{opt.label}</button>
+                );
+              })}
+            </div>
           </div>
         </div>
 

@@ -4,11 +4,11 @@ const { useState, useEffect, useRef, useMemo } = React;
 const PROVIDERS = [
   { id: 'claude-code', name: 'Claude Code', abbr: 'CC', logoId: 'anthropic',
     keyless: true,
-    keyHelp: 'Real-time local tracking from ~/.claude/projects/ — no key needed. Covers Claude Code CLI + Claude desktop usage. Prices are estimates computed from a local table.',
+    keyHelp: 'Real-time local tracking from ~/.claude/projects/ — no key needed. Covers both Claude Code CLI and Claude Desktop (they share this folder). Distinct from Anthropic API which tracks pay-as-you-go API spend.',
     keyLink: 'docs.anthropic.com/en/docs/claude-code', keyPlaceholder: '' },
-  { id: 'codex', name: 'Codex', abbr: 'CX',
+  { id: 'codex', name: 'Codex CLI', abbr: 'CX',
     keyless: true,
-    keyHelp: 'Real-time local tracking from ~/.codex/logs_2.sqlite — no key needed. Includes ChatGPT-subscription-bundled usage (labeled separately).',
+    keyHelp: 'Real-time local tracking from ~/.codex/sessions/ — no key needed. Covers Codex CLI + Codex Desktop. Distinct from API-billed codex-model calls which appear under OpenAI API.',
     keyLink: 'platform.openai.com/docs/codex', keyPlaceholder: '' },
   { id: 'gemini-cli', name: 'Gemini CLI', abbr: 'GC',
     keyless: true, logoId: 'gemini',
@@ -49,8 +49,9 @@ function fmtMoney(n) {
 window.fmt = fmt;
 window.fmtMoney = fmtMoney;
 
-// Context picks 'monogram' (colored initial) or 'logo' (SVG).
-const BadgeStyleContext = React.createContext('monogram');
+// Context picks 'logo' (SVG) or 'monogram' (colored initial). Logos is default
+// — the real brand marks are more recognizable than initials.
+const BadgeStyleContext = React.createContext('logo');
 window.BadgeStyleContext = BadgeStyleContext;
 
 // Provider badge — monogram on colored gradient, or brand SVG on a light chip.
@@ -191,12 +192,12 @@ const PROVIDER_COST_INFO = {
   'claude-code': {
     emphasis: true,
     title: 'List-price estimate',
-    body: 'Computed from local ~/.claude/projects logs × published per-million-token rates. This is NOT what you paid. If you\'re on Claude Max/Pro, your real cost is your flat monthly subscription. Think of this as "value extracted" from your plan.',
+    body: 'Covers both the Claude Code CLI and the Claude Desktop app — they share the same ~/.claude/projects/ logs. NOT what you paid. If you\'re on Claude Max/Pro, real cost is your flat monthly subscription; this is "value extracted" from your plan at published per-million-token rates.',
   },
   'codex': {
     emphasis: true,
     title: 'List-price estimate',
-    body: 'Computed from local ~/.codex/sessions rollouts × published OpenAI rates. NOT your actual charge. If you\'re on ChatGPT Team/Pro/Plus, your real cost is your flat subscription — this shows what the same usage would cost at API rates.',
+    body: 'Covers both the Codex CLI and the Codex Desktop app — they share the same ~/.codex/sessions/ rollouts. NOT your actual charge. If you\'re on ChatGPT Team/Pro/Plus, real cost is your flat subscription; this shows what the same usage would cost at API rates.',
   },
   'gemini-cli': {
     emphasis: true,
