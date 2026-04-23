@@ -88,7 +88,13 @@ Write for **the person who just installed Tokenly**, not for your engineering te
 
 - **Lead with what the user gets**, not what the software does internally. "Tokenly is now free." beats "Freemium paywall launched." "A new tier unlocks the APIs." beats "Paywall is live."
 - **Benefit-first bullets.** What changed *for them*, why it matters, what it feels like. Never describe the machinery.
-- **Positive framing for constraints.** "Pay once. No subscription, no account, no upsells." beats "Requires activation."
+- **Positive framing ONLY.** Never frame changes as defensive, protective, anti-fraud, anti-abuse, preventing misuse, catching bad actors, guarding against problems, etc. Users don't want to hear about problems — they want to hear what's better. Translate every change into a user benefit:
+  - ❌ "Detects refunds and revokes access" → ✅ "Your plan state always reflects your current purchase"
+  - ❌ "Clears stale data to prevent misleading numbers" → ✅ "Numbers always match your current plan — never out of sync"
+  - ❌ "Rate limits prevent abuse" → ✅ (don't mention it)
+  - ❌ "Validates input to avoid errors" → ✅ (don't mention it)
+- **Positive framing for constraints too.** "Pay once. No subscription, no account, no upsells." beats "Requires activation."
+- **Scope = user-visible optimizations and new capabilities.** If a change is purely internal (perf, security, resilience, stability, refactor), either skip it or translate the *outcome* into a user benefit. When in doubt, leave it out.
 - **Big releases open with a short narrative headline** — one or two sentences before the first ## section, stating the release's theme in human terms. Minor/patch releases skip straight to ## What's new.
 
 ## Banned vocabulary in the customer-visible sections ("What's new", "Polish", the intro paragraph)
@@ -126,9 +132,9 @@ TITLE: <version number> — <concise theme, ≤6 words>
 - Skip this section entirely if nothing fits.
 
 ## Under the hood (optional)
-- Infrastructure changes users should know about: new endpoints, auto-update wiring, archive-on-build, edge functions, etc.
-- **Never** include: version bumps, lockfile churn, merge commits, typo fixes, CI noise, linting, test-only changes, or invisible refactors.
-- Skip this section entirely if nothing fits.
+- Only include **novel user-visible infrastructure** users might want to know about (e.g. "pricing tables now refresh automatically", "releases install silently in the background"). Frame as what users get.
+- **Never** include: version bumps, lockfile churn, merge commits, typo fixes, CI noise, linting, test-only changes, invisible refactors, security hardening, anti-abuse measures, refund handling, data validation, error handling, or anything defensive/protective in tone.
+- Skip this section entirely if nothing fits. Most releases don't need it.
 
 # Rules
 
