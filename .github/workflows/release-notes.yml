@@ -21,6 +21,11 @@ on:
         description: 'Tag to (re)generate notes for (e.g. v1.7.0)'
         required: true
         type: string
+      dry_run:
+        description: 'Preview only — print notes to the workflow log, do not update the release'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -62,4 +67,5 @@ jobs:
           REPO:              ${{ github.repository }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN:          ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN:           ${{ inputs.dry_run == true && '1' || '' }}
         run: node scripts/generate-release-notes.mjs
