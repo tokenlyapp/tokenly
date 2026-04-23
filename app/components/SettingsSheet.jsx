@@ -9,6 +9,8 @@ function SettingsSheet({
   onOpenPricing,
   onOpenBudgets,
   onOpenApiKeys,
+  onOpenLicense,
+  isPro = false,
 }) {
   // Human label for the current window: "24h" / "7d" / "Last 30d" etc.
   const rangeShort = {
@@ -92,74 +94,6 @@ function SettingsSheet({
             ))}
           </div>
         </div>
-
-        {/* View current pricing — opens the read-only rates sheet */}
-        {onOpenPricing && (
-          <button
-            onClick={onOpenPricing}
-            style={{
-              width: '100%', textAlign: 'left',
-              background: t.card, border: `1px solid ${t.cardBorder}`,
-              borderRadius: 10, padding: '10px 12px', marginBottom: 8,
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-              cursor: 'pointer', fontFamily: 'inherit', color: t.text,
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontWeight: 600 }}>View current LLM token pricing</div>
-              <div style={{ fontSize: 10, color: t.textMute, marginTop: 2, lineHeight: 1.45 }}>
-                Per-model USD rates the app uses to estimate cost. Auto-refreshed daily.
-              </div>
-            </div>
-            <span style={{ color: t.textDim, flexShrink: 0, fontSize: 14 }}>→</span>
-          </button>
-        )}
-
-        {/* Budget alerts — opens the budgets configuration sheet */}
-        {onOpenBudgets && (
-          <button
-            onClick={onOpenBudgets}
-            style={{
-              width: '100%', textAlign: 'left',
-              background: t.card, border: `1px solid ${t.cardBorder}`,
-              borderRadius: 10, padding: '10px 12px', marginBottom: 8,
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-              cursor: 'pointer', fontFamily: 'inherit', color: t.text,
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontWeight: 600 }}>Set budget alerts</div>
-              <div style={{ fontSize: 10, color: t.textMute, marginTop: 2, lineHeight: 1.45 }}>
-                Daily $ thresholds for API spend + daily spend summary notification.
-              </div>
-            </div>
-            <span style={{ color: t.textDim, flexShrink: 0, fontSize: 14 }}>→</span>
-          </button>
-        )}
-
-        {/* API Keys — opens the dedicated key-management sheet */}
-        {onOpenApiKeys && (
-          <button
-            onClick={onOpenApiKeys}
-            style={{
-              width: '100%', textAlign: 'left',
-              background: t.card, border: `1px solid ${t.cardBorder}`,
-              borderRadius: 10, padding: '10px 12px', marginBottom: 12,
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-              cursor: 'pointer', fontFamily: 'inherit', color: t.text,
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontWeight: 600 }}>API Keys</div>
-              <div style={{ fontSize: 10, color: t.textMute, marginTop: 2, lineHeight: 1.45 }}>
-                {savedKeyCount > 0
-                  ? `${savedKeyCount} saved · encrypted with your OS keychain.`
-                  : 'Add admin keys for OpenAI, Anthropic, or OpenRouter to track API billing.'}
-              </div>
-            </div>
-            <span style={{ color: t.textDim, flexShrink: 0, fontSize: 14 }}>→</span>
-          </button>
-        )}
 
         {/* Menu bar tokens — dual control: which source, which period */}
         <div style={{
@@ -245,8 +179,103 @@ function SettingsSheet({
             </div>
           </div>
         </div>
+
+        {/* View current pricing — always accessible (Free + Max) */}
+        {onOpenPricing && (
+          <SettingsEntry
+            t={t}
+            title="View current LLM token pricing"
+            subtitle="Per-model USD rates the app uses to estimate cost. Auto-refreshed daily."
+            onClick={onOpenPricing}
+          />
+        )}
+
+        {/* API Keys — locked behind Tokenly Max */}
+        {onOpenApiKeys && (
+          <SettingsEntry
+            t={t}
+            title="API Keys"
+            subtitle={
+              isPro
+                ? (savedKeyCount > 0
+                    ? `${savedKeyCount} saved · encrypted with your OS keychain.`
+                    : 'Add admin keys for OpenAI, Anthropic, or OpenRouter to track API billing.')
+                : 'Connect OpenAI, Anthropic, or OpenRouter admin keys.'
+            }
+            locked={!isPro}
+            onClick={isPro ? onOpenApiKeys : onOpenLicense}
+          />
+        )}
+
+        {/* Budget alerts — locked behind Tokenly Max */}
+        {onOpenBudgets && (
+          <SettingsEntry
+            t={t}
+            title="Set budget alerts"
+            subtitle={
+              isPro
+                ? 'Daily $ thresholds for API spend + daily spend summary notification.'
+                : 'Get notified when API spend crosses 50% / 80% / 100% of your daily budget.'
+            }
+            locked={!isPro}
+            onClick={isPro ? onOpenBudgets : onOpenLicense}
+          />
+        )}
       </section>
     </React.Fragment>
   );
 }
+
+// Navigation row used for each "→" entry in the Settings sheet. When
+// `locked`, dims the content and swaps the arrow for a 🔒 + "Unlock
+// Tokenly Max" chip. Click still routes — caller decides whether to open
+// the real sheet or the LicenseSheet.
+function SettingsEntry({ t, title, subtitle, onClick, locked }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        width: '100%', textAlign: 'left',
+        background: t.card, border: `1px solid ${locked ? 'rgba(124,92,255,0.22)' : t.cardBorder}`,
+        borderRadius: 10, padding: '10px 12px', marginBottom: 8,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+        cursor: 'pointer', fontFamily: 'inherit', color: t.text,
+        opacity: locked ? 0.72 : 1,
+        transition: 'opacity .15s, border-color .15s',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+        {locked && (
+          <div style={{
+            width: 22, height: 22, borderRadius: 6,
+            background: 'rgba(124,92,255,0.15)',
+            border: '1px solid rgba(124,92,255,0.3)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: t.accent, flexShrink: 0,
+          }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="4" y="11" width="16" height="10" rx="2" />
+              <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+            </svg>
+          </div>
+        )}
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 600 }}>{title}</div>
+          <div style={{ fontSize: 10, color: t.textMute, marginTop: 2, lineHeight: 1.45 }}>{subtitle}</div>
+        </div>
+      </div>
+      {locked ? (
+        <span style={{
+          fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+          color: t.accent, background: 'rgba(124,92,255,0.12)',
+          border: '1px solid rgba(124,92,255,0.3)',
+          padding: '3px 7px', borderRadius: 5, flexShrink: 0, whiteSpace: 'nowrap',
+        }}>Unlock Max</span>
+      ) : (
+        <span style={{ color: t.textDim, flexShrink: 0, fontSize: 14 }}>→</span>
+      )}
+    </button>
+  );
+}
+
 window.SettingsSheet = SettingsSheet;

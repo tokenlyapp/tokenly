@@ -9,6 +9,9 @@ function LLMUsageApp() {
   const [pricingOpen, setPricingOpen] = useStateA(false);
   const [budgetsOpen, setBudgetsOpen] = useStateA(false);
   const [apiKeysOpen, setApiKeysOpen] = useStateA(false);
+  const [licenseOpen, setLicenseOpen] = useStateA(false);
+  const [licenseState, setLicenseState] = useStateA({ tier: 'free', license: null });
+  const isPro = licenseState.tier === 'max';
   const [spinning, setSpinning] = useStateA(false);
   const [days, setDays] = useStateA(() => {
     try { return parseInt(localStorage.getItem('windowDays') || '30', 10) || 30; } catch { return 30; }
@@ -136,6 +139,17 @@ function LLMUsageApp() {
     if (window.api?.onOpenPricing) window.api.onOpenPricing(() => setPricingOpen(true));
   }, [refreshAll]);
 
+  // Load Tokenly Max license state on mount.
+  useEffectA(() => {
+    if (!window.api?.getLicense) return;
+    (async () => {
+      try {
+        const res = await window.api.getLicense();
+        if (res) setLicenseState(res);
+      } catch {}
+    })();
+  }, []);
+
   // ---- Budget alerts (API-only daily $ thresholds) ----------------------
   // Runs on every successful refresh. Candidate alerts are sent to main,
   // which dedupes against a per-day ledger before showing notifications.
@@ -256,11 +270,11 @@ function LLMUsageApp() {
   useEffectA(() => {
     if (!window.api?.setTrayTitle) return;
     const handle = setTimeout(() => {
-      const title = computeTrayTitle(trayMode, traySource, usage);
+      const title = computeTrayTitle(trayMode, traySource, usage, days);
       window.api.setTrayTitle(title);
     }, 250);
     return () => clearTimeout(handle);
-  }, [trayMode, traySource, usage]);
+  }, [trayMode, traySource, usage, days]);
 
   const keysPresent = Object.values(meta).some((m) => m?.present);
   const isFirstRun = booted && !keysPresent;
@@ -325,14 +339,36 @@ function LLMUsageApp() {
         WebkitAppRegion: isPopover ? 'no-drag' : 'drag',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <div style={{
-            width: 9, height: 9, borderRadius: '50%',
-            background: `linear-gradient(135deg, ${t.accent}, ${t.accent2})`,
-            boxShadow: '0 0 12px rgba(124, 92, 255, 0.7)',
-            animation: 'llmpulse 1.5s ease-in-out infinite',
-            flexShrink: 0,
-          }} />
-          <div style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '-0.01em' }}>Tokenly</div>
+          <img
+            src="icon.png"
+            alt=""
+            draggable={false}
+            style={{
+              width: 18, height: 18, borderRadius: 5,
+              flexShrink: 0, display: 'block',
+              WebkitAppRegion: 'no-drag',
+              boxShadow: isPro
+                ? '0 0 10px rgba(232,164,65,0.35)'
+                : '0 0 10px rgba(124,92,255,0.35)',
+              transition: 'box-shadow .2s',
+            }}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '-0.01em' }}>Tokenly</div>
+            {isPro && (
+              <span style={{
+                fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
+                padding: '2px 6px', borderRadius: 4, textTransform: 'uppercase',
+                color: '#1a1408',
+                background: 'linear-gradient(135deg, #ffd772, #e8a441)',
+                border: '1px solid rgba(232,164,65,0.55)',
+                boxShadow: '0 0 10px rgba(232,164,65,0.35)',
+                lineHeight: 1,
+                fontVariantNumeric: 'tabular-nums',
+                flexShrink: 0,
+              }}>Max</span>
+            )}
+          </div>
           <div style={{ fontSize: 11, color: t.textMute, fontVariantNumeric: 'tabular-nums', display: 'flex', alignItems: 'center', gap: 6 }}>
             <span>· {rangeLabel}</span>
             {lastRefreshedAt && (
@@ -415,6 +451,8 @@ function LLMUsageApp() {
               onToggle={() => setExpanded({ ...expanded, [p.id]: !expanded[p.id] })}
               onOpenSettings={() => setSheetOpen(true)}
               onOpenExternal={onOpenExternal}
+              isPro={isPro}
+              onOpenLicense={() => setLicenseOpen(true)}
             />
           ))
         )}
@@ -434,9 +472,11 @@ function LLMUsageApp() {
         onOpenPricing={() => { setSheetOpen(false); setPricingOpen(true); }}
         onOpenBudgets={() => { setSheetOpen(false); setBudgetsOpen(true); }}
         onOpenApiKeys={() => { setSheetOpen(false); setApiKeysOpen(true); }}
+        onOpenLicense={() => { setSheetOpen(false); setLicenseOpen(true); }}
+        isPro={isPro}
       />
       <ApiKeysSheet
-        open={apiKeysOpen}
+        open={apiKeysOpen && isPro}
         onClose={() => setApiKeysOpen(false)}
         onBack={() => { setApiKeysOpen(false); setSheetOpen(true); }}
         savedKeys={savedKeys}
@@ -450,9 +490,18 @@ function LLMUsageApp() {
         onBack={() => { setPricingOpen(false); setSheetOpen(true); }}
       />
       <BudgetsSheet
-        open={budgetsOpen}
+        open={budgetsOpen && isPro}
         onClose={() => setBudgetsOpen(false)}
         onBack={() => { setBudgetsOpen(false); setSheetOpen(true); }}
+      />
+      <LicenseSheet
+        open={licenseOpen}
+        onClose={() => setLicenseOpen(false)}
+        onBack={() => { setLicenseOpen(false); setSheetOpen(true); }}
+        tier={licenseState.tier}
+        license={licenseState.license}
+        onLicenseChange={setLicenseState}
+        onOpenExternal={onOpenExternal}
       />
     </div>
     </BadgeStyleContext.Provider>
@@ -471,7 +520,7 @@ window.LLMUsageApp = LLMUsageApp;
 //               Uses totals with the SAME formula as the card's rightSide
 //               label (input + output + cache_read + cached), so the tray
 //               and card agree exactly when the same source is selected.
-function computeTrayTitle(mode, source, usage) {
+function computeTrayTitle(mode, source, usage, days) {
   if (!mode || mode === 'off') return '';
 
   const providerList = (source === 'all')
@@ -513,13 +562,19 @@ function computeTrayTitle(mode, source, usage) {
     return String(Math.round(n));
   };
 
+  // Short range label for the rolling window — matches what the popover's
+  // range picker shows ("24h", "7d", "30d", etc.).
+  const rangeLabel = ({
+    1: '24h', 7: '7d', 14: '14d', 30: '30d', 90: '90d', 180: '180d',
+  })[days] || (days ? days + 'd' : 'range');
+
   const tag = (source === 'all')
     ? ''
-    : (PROVIDERS.find((p) => p.id === source)?.abbr || '') + ' ';
+    : (PROVIDERS.find((p) => p.id === source)?.abbr || '') + ' · ';
 
-  if (mode === 'today')  return ' ' + tag + fmt(todayTotal);
-  if (mode === 'window') return ' ' + tag + fmt(windowTotal);
-  if (mode === 'hybrid') return ' ' + tag + fmt(todayTotal) + ' / ' + fmt(windowTotal);
+  if (mode === 'today')  return ' ' + tag + 'Today ' + fmt(todayTotal);
+  if (mode === 'window') return ' ' + tag + rangeLabel + ' ' + fmt(windowTotal);
+  if (mode === 'hybrid') return ' ' + tag + 'Today ' + fmt(todayTotal) + ' · ' + rangeLabel + ' ' + fmt(windowTotal);
   return '';
 }
 

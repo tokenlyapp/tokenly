@@ -579,6 +579,91 @@ ipcMain.handle('alerts:maybe-fire-summary', (_e, payload) => {
   return { fired: true };
 });
 
+// ---------------------------------------------------------------------------
+// Tokenly Max license (paywall for API sources + budget alerts)
+// ---------------------------------------------------------------------------
+// Storage: ~/Library/Application Support/Tokenly/license.json
+// Tier model: 'free' (default) | 'max' (unlocked).
+//
+// Free keeps the three local sources (Claude Code, Codex CLI, Gemini CLI),
+// Settings, and the read-only pricing sheet. Max unlocks OpenAI API,
+// Anthropic API, OpenRouter, and budget alerts.
+//
+// Activation: the renderer passes the Stripe checkout session_id the user
+// pasted into Settings → Unlock Tokenly Max. We POST it to the Netlify
+// edge function at /api/license/verify, which calls Stripe directly and
+// returns the license metadata on a paid, non-refunded session.
+
+function licensePath() { return path.join(app.getPath('userData'), 'license.json'); }
+
+function loadLicense() {
+  try {
+    const p = licensePath();
+    if (!fs.existsSync(p)) return null;
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (data && data.tier === 'max' && data.session_id) return data;
+  } catch {}
+  return null;
+}
+
+function saveLicense(license) {
+  try {
+    fs.writeFileSync(licensePath(), JSON.stringify(license, null, 2));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+}
+
+ipcMain.handle('license:get', () => {
+  const lic = loadLicense();
+  return { tier: lic ? 'max' : 'free', license: lic };
+});
+
+const LICENSE_VERIFY_URL = 'https://trytokenly.app/api/license/verify';
+
+ipcMain.handle('license:activate', async (_e, code) => {
+  const trimmed = String(code || '').trim();
+  if (!trimmed) return { ok: false, reason: 'empty_code' };
+  if (!/^cs_(test|live)_[a-zA-Z0-9]{4,}$/.test(trimmed)) {
+    return { ok: false, reason: 'invalid_format' };
+  }
+  try {
+    const res = await fetch(LICENSE_VERIFY_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': `Tokenly/${app.getVersion()}`,
+      },
+      body: JSON.stringify({ session_id: trimmed }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body?.ok || body?.tier !== 'max') {
+      return { ok: false, reason: body?.reason || ('http_' + res.status) };
+    }
+    const license = {
+      tier: 'max',
+      session_id: trimmed,
+      activated_at: Date.now(),
+      email: body.email || null,
+      purchased_at: body.purchased_at || null,
+      last_verified_at: Date.now(),
+      verify_source: 'stripe',
+    };
+    const saved = saveLicense(license);
+    if (!saved.ok) return { ok: false, reason: 'save_failed', error: saved.error };
+    return { ok: true, tier: 'max', license };
+  } catch (e) {
+    return { ok: false, reason: 'network', error: String(e?.message || e) };
+  }
+});
+
+ipcMain.handle('license:deactivate', () => {
+  try { if (fs.existsSync(licensePath())) fs.unlinkSync(licensePath()); } catch {}
+  return { ok: true, tier: 'free' };
+});
+
 async function fetchUsage(provider, key, days) {
   const now = Math.floor(Date.now() / 1000);
   const start = now - days * 86400;

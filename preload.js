@@ -18,4 +18,7 @@ contextBridge.exposeInMainWorld('api', {
   setBudgets: (budgets) => ipcRenderer.invoke('budgets:set', budgets),
   maybeFireAlerts: (alerts) => ipcRenderer.invoke('alerts:maybe-fire', alerts),
   maybeFireDailySummary: (payload) => ipcRenderer.invoke('alerts:maybe-fire-summary', payload),
+  getLicense: () => ipcRenderer.invoke('license:get'),
+  activateLicense: (code) => ipcRenderer.invoke('license:activate', code),
+  deactivateLicense: () => ipcRenderer.invoke('license:deactivate'),
 });

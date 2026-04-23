@@ -42,10 +42,10 @@ function formatPerMillion(v) {
   return '$' + n.toFixed(2);
 }
 
-function formatUpdatedAt(iso) {
-  if (!iso) return null;
+function formatLocalDate(dateLike) {
+  if (dateLike == null || dateLike === 0) return null;
   try {
-    const d = new Date(iso);
+    const d = dateLike instanceof Date ? dateLike : new Date(dateLike);
     if (Number.isNaN(d.getTime())) return null;
     return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   } catch {
@@ -114,7 +114,12 @@ function PricingSheet({ open, onClose, onBack }) {
     tables?.source === 'remote' ? 'Loaded from trytokenly.app'
     : tables?.source === 'bundled' ? 'Using bundled offline fallback'
     : 'Loading…';
-  const updatedLabel = formatUpdatedAt(tables?.updated_at);
+  // Primary date = when this app last successfully pulled from the CDN.
+  // Updates every time the user clicks Refresh. Falls back to the server's
+  // `updated_at` (the rates' effective date) only if we never refreshed.
+  const refreshedLabel = formatLocalDate(tables?.fetched_at) || formatLocalDate(tables?.updated_at);
+  const ratesChangedLabel = formatLocalDate(tables?.updated_at);
+  const ratesDifferFromRefresh = ratesChangedLabel && refreshedLabel && ratesChangedLabel !== refreshedLabel;
 
   return (
     <React.Fragment>
@@ -180,9 +185,12 @@ function PricingSheet({ open, onClose, onBack }) {
               }} />
               {sourceLabel}
             </div>
-            {updatedLabel && (
+            {refreshedLabel && (
               <div style={{ fontSize: 10, color: t.textDim, marginTop: 3, fontVariantNumeric: 'tabular-nums' }}>
-                Rates effective {updatedLabel}
+                Last refreshed {refreshedLabel}
+                {ratesDifferFromRefresh && (
+                  <span style={{ color: t.textMute }}> · rates last changed {ratesChangedLabel}</span>
+                )}
               </div>
             )}
           </div>

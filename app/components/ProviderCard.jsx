@@ -2,11 +2,51 @@
 // Ported from Claude Design; added a 'loading' status branch.
 const { useState: useStateC } = React;
 
-function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOpenExternal }) {
+function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOpenExternal, isPro = false, onOpenLicense }) {
   const [hover, setHover] = useStateC(false);
   const t = TOKENS.color;
 
+  // API-billed providers are paywalled. Render a locked body regardless of
+  // whether a key is saved — deactivated Max users keep their encrypted
+  // keys but lose access until they reactivate.
+  const lockedForFree = !provider.keyless && !isPro;
+
   const renderBody = () => {
+    if (lockedForFree) {
+      return (
+        <div style={{
+          padding: '14px 12px 12px', textAlign: 'center',
+          fontSize: 11.5, color: t.textDim, lineHeight: 1.5,
+        }}>
+          <div style={{
+            width: 36, height: 36, borderRadius: 10,
+            background: 'rgba(124,92,255,0.12)',
+            border: '1px solid rgba(124,92,255,0.3)',
+            color: t.accent,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            margin: '0 auto 10px',
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="4" y="11" width="16" height="10" rx="2" />
+              <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+            </svg>
+          </div>
+          <div style={{ color: t.text, fontWeight: 500 }}>{provider.name} is part of Tokenly Max.</div>
+          <div style={{ fontSize: 10, color: t.textMute, marginTop: 4 }}>
+            Unlock API billing + budget alerts for $5.99 lifetime.
+          </div>
+          <button
+            onClick={(e) => { e.stopPropagation(); onOpenLicense && onOpenLicense(); }}
+            style={{
+              marginTop: 10, padding: '6px 14px', borderRadius: 7,
+              background: t.accent, color: '#fff', fontWeight: 600,
+              fontSize: 11, border: 0, cursor: 'pointer', fontFamily: 'inherit',
+              boxShadow: '0 2px 8px rgba(124,92,255,0.35)',
+            }}
+          >Unlock Tokenly Max</button>
+        </div>
+      );
+    }
     if (!data || !data.present) {
       if (provider.keyless) {
         const hints = {

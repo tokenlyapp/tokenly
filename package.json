@@ -6,8 +6,9 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder",
-    "dist:publish": "electron-builder --publish always"
+    "dist": "electron-builder && npm run archive-dmg",
+    "dist:publish": "electron-builder --publish always && npm run archive-dmg",
+    "archive-dmg": "mkdir -p /Users/adowney/Documents/Tokenly/versions && cp dist/Tokenly-*-universal.dmg /Users/adowney/Documents/Tokenly/versions/"
   },
   "build": {
     "appId": "app.tokenly.desktop",
