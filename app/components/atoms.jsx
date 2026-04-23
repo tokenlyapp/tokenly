@@ -231,5 +231,37 @@ const Icons = {
   eye: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>,
   check: <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>,
   arrow: <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 5l7 7-7 7"/></svg>,
+  arrowLeft: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>,
+  chevronDown: <svg width="16" height="10" viewBox="0 0 24 14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 3l8 8 8-8"/></svg>,
 };
+
+// Subtle clickable chevron-down that sits where the drag-handle used to be
+// at the top of every bottom-sheet. Click → onClose. Matches the OS "pull
+// sheet down to dismiss" gesture without requiring actual drag wiring.
+function SheetMinimize({ onClick }) {
+  const [hov, setHov] = useState(false);
+  const t = TOKENS.color;
+  return (
+    <button
+      onClick={onClick}
+      title="Minimize"
+      aria-label="Minimize sheet"
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        display: 'block', margin: '0 auto 6px',
+        background: hov ? 'rgba(255,255,255,0.06)' : 'transparent',
+        border: 0, cursor: 'pointer',
+        padding: '4px 18px',
+        borderRadius: 10,
+        color: hov ? t.textDim : t.textMute,
+        transition: 'background .15s, color .15s',
+        lineHeight: 0,
+      }}
+    >
+      {Icons.chevronDown}
+    </button>
+  );
+}
+window.SheetMinimize = SheetMinimize;
 window.Icons = Icons;

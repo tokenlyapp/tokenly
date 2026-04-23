@@ -53,11 +53,12 @@ function formatUpdatedAt(iso) {
   }
 }
 
-function PricingSheet({ open, onClose }) {
+function PricingSheet({ open, onClose, onBack }) {
   const t = TOKENS.color;
   const [tables, setTables] = useStateP(null);
   const [loading, setLoading] = useStateP(false);
   const [refreshing, setRefreshing] = useStateP(false);
+  const [justRefreshed, setJustRefreshed] = useStateP(false);
   const [error, setError] = useStateP(null);
 
   const loadTables = async () => {
@@ -73,15 +74,29 @@ function PricingSheet({ open, onClose }) {
     }
   };
 
-  // Refresh the hosted file from the CDN, then re-read tables.
+  // Refresh the hosted file from the CDN, then re-read tables. Enforces a
+  // minimum spinner duration so the animation is visible even when the CDN
+  // cache is warm and the fetch completes in <50ms. On success, briefly
+  // flashes a "Updated ✓" state so the button clearly acknowledges the click.
   const refresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
+    setError(null);
+    const startedAt = Date.now();
+    const MIN_SPIN_MS = 650;
     try {
       const result = await window.api.refreshPricing();
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < MIN_SPIN_MS) {
+        await new Promise((r) => setTimeout(r, MIN_SPIN_MS - elapsed));
+      }
       if (result?.tables) setTables(result.tables);
-      if (!result?.ok) setError(`Refresh failed (${result?.reason || 'unknown'}) — showing last cached rates.`);
-      else setError(null);
+      if (!result?.ok) {
+        setError(`Refresh failed (${result?.reason || 'unknown'}) — showing last cached rates.`);
+      } else {
+        setJustRefreshed(true);
+        setTimeout(() => setJustRefreshed(false), 1500);
+      }
     } catch (e) {
       setError(String(e?.message || e));
     } finally {
@@ -125,20 +140,18 @@ function PricingSheet({ open, onClose }) {
           transform: open ? 'translateY(0)' : 'translateY(100%)',
           transition: 'transform .25s cubic-bezier(0.2, 0.9, 0.3, 1)',
           zIndex: 60,
-          maxHeight: '92%',
+          maxHeight: '95%',
           overflowY: 'auto',
         }}
       >
-        {/* Grab handle */}
-        <div style={{
-          width: 36, height: 4, background: 'rgba(255,255,255,0.15)',
-          borderRadius: 2, margin: '0 auto 10px',
-        }} />
+        <SheetMinimize onClick={onClose} />
 
         {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>Current Pricing</div>
-          <IconBtn onClick={onClose} title="Close">{Icons.close}</IconBtn>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {onBack && (
+            <IconBtn onClick={onBack} title="Back to Settings">{Icons.arrowLeft}</IconBtn>
+          )}
+          <div style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>Current Pricing</div>
         </div>
         <div style={{
           fontSize: 10.5, color: t.textDim, marginTop: 4, marginBottom: 12, lineHeight: 1.5,
@@ -177,23 +190,28 @@ function PricingSheet({ open, onClose }) {
             onClick={refresh}
             disabled={refreshing}
             style={{
-              background: refreshing ? 'rgba(124,92,255,0.25)' : t.accent,
-              color: '#fff', border: 0,
+              background: justRefreshed
+                ? 'rgba(52,211,153,0.22)'
+                : refreshing ? 'rgba(124,92,255,0.25)' : t.accent,
+              color: justRefreshed ? t.green : '#fff',
+              border: justRefreshed ? '1px solid rgba(52,211,153,0.45)' : 0,
               padding: '6px 12px', borderRadius: 7,
-              fontSize: 10.5, fontWeight: 600, cursor: refreshing ? 'default' : 'pointer',
-              opacity: refreshing ? 0.7 : 1,
+              fontSize: 10.5, fontWeight: 600,
+              cursor: refreshing ? 'default' : 'pointer',
+              opacity: refreshing ? 0.85 : 1,
               fontFamily: 'inherit',
               display: 'flex', alignItems: 'center', gap: 6,
               flexShrink: 0,
+              transition: 'background .2s, color .2s, border .2s',
             }}
           >
             <span style={{
-              display: 'inline-block',
-              animation: refreshing ? 'llm-spin 0.8s linear infinite' : 'none',
+              display: 'inline-flex', lineHeight: 0,
+              animation: refreshing ? 'llmspin 0.75s linear infinite' : 'none',
             }}>
-              {Icons.refresh}
+              {justRefreshed ? Icons.check : Icons.refresh}
             </span>
-            {refreshing ? 'Refreshing…' : 'Refresh'}
+            {refreshing ? 'Refreshing…' : justRefreshed ? 'Updated' : 'Refresh'}
           </button>
         </div>
 

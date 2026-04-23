@@ -8,6 +8,7 @@ function LLMUsageApp() {
   const [sheetOpen, setSheetOpen] = useStateA(false);
   const [pricingOpen, setPricingOpen] = useStateA(false);
   const [budgetsOpen, setBudgetsOpen] = useStateA(false);
+  const [apiKeysOpen, setApiKeysOpen] = useStateA(false);
   const [spinning, setSpinning] = useStateA(false);
   const [days, setDays] = useStateA(() => {
     try { return parseInt(localStorage.getItem('windowDays') || '30', 10) || 30; } catch { return 30; }
@@ -423,9 +424,6 @@ function LLMUsageApp() {
         open={sheetOpen}
         onClose={() => setSheetOpen(false)}
         savedKeys={savedKeys}
-        onSave={onSaveKey}
-        onRemove={onRemoveKey}
-        onOpenExternal={onOpenExternal}
         badgeStyle={badgeStyle}
         onBadgeStyleChange={updateBadgeStyle}
         trayMode={trayMode}
@@ -435,14 +433,26 @@ function LLMUsageApp() {
         currentDays={days}
         onOpenPricing={() => { setSheetOpen(false); setPricingOpen(true); }}
         onOpenBudgets={() => { setSheetOpen(false); setBudgetsOpen(true); }}
+        onOpenApiKeys={() => { setSheetOpen(false); setApiKeysOpen(true); }}
+      />
+      <ApiKeysSheet
+        open={apiKeysOpen}
+        onClose={() => setApiKeysOpen(false)}
+        onBack={() => { setApiKeysOpen(false); setSheetOpen(true); }}
+        savedKeys={savedKeys}
+        onSave={onSaveKey}
+        onRemove={onRemoveKey}
+        onOpenExternal={onOpenExternal}
       />
       <PricingSheet
         open={pricingOpen}
         onClose={() => setPricingOpen(false)}
+        onBack={() => { setPricingOpen(false); setSheetOpen(true); }}
       />
       <BudgetsSheet
         open={budgetsOpen}
         onClose={() => setBudgetsOpen(false)}
+        onBack={() => { setBudgetsOpen(false); setSheetOpen(true); }}
       />
     </div>
     </BadgeStyleContext.Provider>

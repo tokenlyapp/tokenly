@@ -19,9 +19,10 @@ function hourLabel(h) {
   return `${h12}:00 ${ampm}`;
 }
 
-function BudgetsSheet({ open, onClose }) {
+function BudgetsSheet({ open, onClose, onBack }) {
   const t = TOKENS.color;
   const [budgets, setBudgets] = useStateB(null);
+  const [rawInputs, setRawInputs] = useStateB({}); // providerId → unparsed string
   const [saving, setSaving] = useStateB(false);
   const [savedMsg, setSavedMsg] = useStateB(null);
 
@@ -31,15 +32,33 @@ function BudgetsSheet({ open, onClose }) {
       try {
         const b = await window.api.getBudgets();
         setBudgets(b);
+        // Seed the raw-input buffer from the stored budget numbers so the
+        // inputs show current values on open.
+        const seed = {};
+        for (const [k, v] of Object.entries(b?.daily || {})) {
+          seed[k] = v == null || v === 0 ? '' : String(v);
+        }
+        setRawInputs(seed);
       } catch {
         setBudgets({ enabled: true, daily: {}, summary: { enabled: true, hour: 17 } });
+        setRawInputs({});
       }
     })();
   }, [open]);
 
+  // Keep the user's raw keystrokes in rawInputs (so intermediate states like
+  // "0." or "0.0" stay visible while they type) and *separately* parse into
+  // the numeric budget store. Only strictly positive finite numbers end up
+  // in budgets.daily; anything else (empty, ".", "0") stores as null.
   const updateDaily = (providerId, raw) => {
-    const cleaned = String(raw).replace(/[^0-9.]/g, '');
-    const num = cleaned === '' ? null : Number(cleaned);
+    let cleaned = String(raw).replace(/[^0-9.]/g, '');
+    const firstDot = cleaned.indexOf('.');
+    if (firstDot !== -1) {
+      // Allow only one decimal point.
+      cleaned = cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, '');
+    }
+    setRawInputs((r) => ({ ...r, [providerId]: cleaned }));
+    const num = cleaned === '' || cleaned === '.' ? null : Number(cleaned);
     setBudgets((b) => ({
       ...b,
       daily: { ...(b.daily || {}), [providerId]: Number.isFinite(num) && num > 0 ? num : null },
@@ -86,18 +105,17 @@ function BudgetsSheet({ open, onClose }) {
           transform: open ? 'translateY(0)' : 'translateY(100%)',
           transition: 'transform .25s cubic-bezier(0.2, 0.9, 0.3, 1)',
           zIndex: 60,
-          maxHeight: '92%',
+          maxHeight: '95%',
           overflowY: 'auto',
         }}
       >
-        <div style={{
-          width: 36, height: 4, background: 'rgba(255,255,255,0.15)',
-          borderRadius: 2, margin: '0 auto 10px',
-        }} />
+        <SheetMinimize onClick={onClose} />
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>Budget Alerts</div>
-          <IconBtn onClick={onClose} title="Close">{Icons.close}</IconBtn>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {onBack && (
+            <IconBtn onClick={onBack} title="Back to Settings">{Icons.arrowLeft}</IconBtn>
+          )}
+          <div style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>Budget Alerts</div>
         </div>
         <div style={{
           fontSize: 10.5, color: t.textDim, marginTop: 4, marginBottom: 12, lineHeight: 1.5,
@@ -120,11 +138,14 @@ function BudgetsSheet({ open, onClose }) {
           <Toggle value={!!budgets?.enabled} onChange={updateEnabled} t={t} />
         </div>
 
-        {/* Daily budgets per provider + overall */}
+        {/* Daily budgets per provider + overall.
+            Inputs stay editable even when the master toggle is off — users
+            need to be able to adjust values without re-enabling first. The
+            toggle only gates whether alerts actually fire. */}
         <div style={{
           background: t.card, border: `1px solid ${t.cardBorder}`,
           borderRadius: 10, padding: '12px 14px', marginBottom: 12,
-          opacity: budgets?.enabled ? 1 : 0.55, pointerEvents: budgets?.enabled ? 'auto' : 'none',
+          opacity: budgets?.enabled ? 1 : 0.72,
           transition: 'opacity .15s',
         }}>
           <div style={{ marginBottom: 10 }}>
@@ -139,7 +160,7 @@ function BudgetsSheet({ open, onClose }) {
               key={p.id}
               badgeId={p.badgeId}
               label={p.name}
-              value={budgets?.daily?.[p.id]}
+              rawValue={rawInputs[p.id] ?? ''}
               onChange={(v) => updateDaily(p.id, v)}
               t={t}
             />
@@ -148,7 +169,7 @@ function BudgetsSheet({ open, onClose }) {
           <BudgetRow
             badgeId={null}
             label="Overall (sum across APIs)"
-            value={budgets?.daily?._overall}
+            rawValue={rawInputs._overall ?? ''}
             onChange={(v) => updateDaily('_overall', v)}
             t={t}
             emphasize
@@ -219,8 +240,7 @@ function BudgetsSheet({ open, onClose }) {
   );
 }
 
-function BudgetRow({ badgeId, label, value, onChange, t, emphasize }) {
-  const shown = value == null || value === 0 ? '' : String(value);
+function BudgetRow({ badgeId, label, rawValue, onChange, t, emphasize }) {
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 10,
@@ -253,7 +273,7 @@ function BudgetRow({ badgeId, label, value, onChange, t, emphasize }) {
         <input
           type="text"
           inputMode="decimal"
-          value={shown}
+          value={rawValue}
           placeholder="—"
           onChange={(e) => onChange(e.target.value)}
           style={{
