@@ -16,6 +16,10 @@ Every token and dollar your AI tools consume, across six providers, surfaced in 
 
 [**Download →**](https://trytokenly.app) &nbsp;•&nbsp; [**How it works**](#how-it-works) &nbsp;•&nbsp; [**FAQ**](#faq) &nbsp;•&nbsp; [**Pricing**](#pricing)
 
+<br />
+
+<img src="./assets/demo.gif" alt="Tokenly demo — click the tray icon and see your AI spend across six providers" width="720" />
+
 </div>
 
 ---
@@ -25,7 +29,6 @@ Every token and dollar your AI tools consume, across six providers, surfaced in 
 - [What is Tokenly?](#what-is-tokenly)
 - [What it tracks](#what-it-tracks)
 - [Install in 30 seconds](#install-in-30-seconds)
-- [Screenshots](#screenshots)
 - [Features](#features)
 - [How it works](#how-it-works)
 - [Privacy & security](#privacy--security)
@@ -98,16 +101,6 @@ That's it. No signup, no configuration, no telemetry. If you want to unlock API-
  │                             └─ Tokenly      │
  └────────────────────────────────────────────┘
 ```
-
----
-
-## Screenshots
-
-<div align="center">
-
-> _Screenshots and the live landing-page demo are available at **[trytokenly.app](https://trytokenly.app)** — the hero section runs the real app UI in an iframe with mock data so you can try every control before downloading._
-
-</div>
 
 ---
 
