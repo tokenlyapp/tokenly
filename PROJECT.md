@@ -120,12 +120,9 @@ LLM Usage Dash/
 │   ├── ProviderCard.jsx        # The collapsible card for each provider
 │   ├── SettingsSheet.jsx       # Bottom-sheet with API key inputs
 │   └── App.jsx                 # Root component — tray orchestration, refresh loop, state
-├── assets/
-│   ├── anthropic.svg openai.svg codex.svg openrouter.svg  # Brand logos (SVG)
-│   └── deepseek.svg gemini.svg perplexity.svg  # Pulled in earlier explorations; unused now
-└── marketing/
-    ├── LISTING.md              # Mac App Store listing copy (for future MAS submission)
-    └── screenshots.html        # 5 styled App Store screenshot mockups at 2880×1800
+└── assets/
+    ├── anthropic.svg openai.svg codex.svg openrouter.svg  # Brand logos (SVG)
+    └── deepseek.svg gemini.svg perplexity.svg  # Pulled in earlier explorations; unused now
 ```
 
 ### Runtime data flow
