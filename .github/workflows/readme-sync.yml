@@ -1,0 +1,98 @@
+name: Sync README
+
+# Keeps README.md 100% accurate to the current state of the software.
+#
+# Fires when any "truth source" file is merged to main:
+#   - Electron main process + renderer components
+#   - package.json (version + deps)
+#   - PROJECT.md (architecture), ROADMAP.md (shipped features)
+#   - scripts/ (build, release, sync tooling)
+#
+# Also runs on every GitHub Release publish (so a new tag always reconciles
+# the README) and manually via workflow_dispatch.
+#
+# Loop prevention: README.md is in `paths-ignore`, and the commit this
+# workflow pushes has `[skip ci]` in its message. The workflow will not
+# re-trigger itself.
+#
+# Required repo secret: ANTHROPIC_API_KEY (same one used by release-notes.yml)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'main.js'
+      - 'preload.js'
+      - 'renderer.js'
+      - 'app/**'
+      - 'assets/**'
+      - 'package.json'
+      - 'PROJECT.md'
+      - 'ROADMAP.md'
+      - 'OPERATIONS.md'
+      - 'scripts/**'
+      - '.github/workflows/readme-sync.yml'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview only — print the proposed README, do not commit'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: readme-sync-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the sync script can read a meaningful commit log.
+          fetch-depth: 50
+          # Always operate on main — releases check out a tag by default, but
+          # the README lives on main and so does the sync script.
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Resolve commit range
+        id: range
+        run: |
+          # For push events, use the before..after range GitHub gives us.
+          # Otherwise fall back to the last ~40 commits.
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            echo "range=${{ github.event.before }}..${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "range=HEAD~40..HEAD" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run README sync
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REPO:              ${{ github.repository }}
+          COMMIT_RANGE:      ${{ steps.range.outputs.range }}
+          DRY_RUN:           ${{ inputs.dry_run == true && '1' || '' }}
+        run: node scripts/sync-readme.mjs
+
+      - name: Commit + push if README changed
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          if git diff --quiet -- README.md; then
+            echo "README.md unchanged — nothing to commit"
+            exit 0
+          fi
+          git config user.name  "tokenly-bot"
+          git config user.email "bot@trytokenly.app"
+          git add README.md
+          git commit -m "docs: auto-sync README to current state [skip ci]"
+          git push origin main
