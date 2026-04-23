@@ -29,12 +29,14 @@ This document is the complete build record. Read it before making architectural 
 - Cursor: declined on scope (opaque sqlite blobs, client-side billing data unreliable). Closed.
 
 **Next unshipped Tier 1 items:**
-- Budget alerts + daily spend notifications
 - Product Hunt + Hacker News launch
 - $5.99 lifetime Pro tier paywall (free = Claude Code + Codex CLI + Gemini CLI; paid = APIs + budget alerts + export). Existing $1.99 buyers grandfathered.
 
 **Shipped since last handoff:**
-- Live pricing refresh — `https://trytokenly.app/pricing.json` fetched on launch + every 24h, disk-cached, with bundled fallback. Tray menu → "Refresh Pricing Tables" for manual refresh.
+- Live pricing refresh — `https://trytokenly.app/pricing.json` fetched on launch + every 24h, disk-cached, with bundled fallback. Tray menu → "View Pricing…" opens the sheet.
+- **Pricing sheet** — read-only per-model rates UI. Settings → "View current pricing →". Shows source (remote/bundled), effective date, multiplier chips, two-column rate tables.
+- **Budget alerts v1** — daily $ thresholds for API providers only. 50/80/100% native notifications, once per UTC day per threshold. Daily spend summary at user-chosen hour. Persisted to `budgets.json`; dedupe ledger at `alerts.json`. v2 = monthly + token-based thresholds for local tools.
+- **costTrend** added to every API fetcher (per-day $ bucket array) — powers budget evaluation, will also power compare-ranges (§2.2).
 
 ---
 

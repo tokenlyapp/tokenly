@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain, safeStorage, shell, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain, safeStorage, shell, dialog, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -451,6 +451,134 @@ ipcMain.handle('pricing:refresh', async () => {
   return { ...result, tables: getPricingTablesForRenderer() };
 });
 
+// ---------------------------------------------------------------------------
+// Budget alerts (v1: daily $ budgets for API-billed providers only)
+// ---------------------------------------------------------------------------
+// The renderer owns evaluation since it already holds fresh usage data. Main
+// process only:
+//   - persists budgets to ~/Library/Application Support/Tokenly/budgets.json
+//   - dedupes alerts against ~/Library/Application Support/Tokenly/alerts.json
+//   - fires native macOS notifications (and prunes stale ledger entries)
+//
+// Budget scope in v1: daily thresholds only. Monthly lands in a later release
+// once the renderer carries a full 30d cost trend regardless of selected
+// range. See ROADMAP.md §1.4 / §2.x for the follow-ups.
+
+const DEFAULT_BUDGETS = {
+  enabled: true,
+  thresholds: [0.5, 0.8, 1.0],
+  daily: {},                // { openai, anthropic, openrouter, _overall }
+  summary: { enabled: true, hour: 17 }, // local 5pm
+};
+
+function budgetsPath()    { return path.join(app.getPath('userData'), 'budgets.json'); }
+function alertLedgerPath(){ return path.join(app.getPath('userData'), 'alerts.json'); }
+
+function loadBudgets() {
+  try {
+    const p = budgetsPath();
+    if (!fs.existsSync(p)) return { ...DEFAULT_BUDGETS };
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return {
+      ...DEFAULT_BUDGETS,
+      ...data,
+      daily: { ...(data.daily || {}) },
+      summary: { ...DEFAULT_BUDGETS.summary, ...(data.summary || {}) },
+    };
+  } catch {
+    return { ...DEFAULT_BUDGETS };
+  }
+}
+
+function saveBudgets(budgets) {
+  try {
+    fs.writeFileSync(budgetsPath(), JSON.stringify(budgets, null, 2));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+}
+
+function loadAlertLedger() {
+  try {
+    const p = alertLedgerPath();
+    if (!fs.existsSync(p)) return {};
+    return JSON.parse(fs.readFileSync(p, 'utf8')) || {};
+  } catch { return {}; }
+}
+
+function saveAlertLedger(ledger) {
+  // Prune entries older than 14 days so the ledger doesn't grow unbounded.
+  const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
+  const pruned = {};
+  for (const [k, v] of Object.entries(ledger)) {
+    if (Number(v) >= cutoff) pruned[k] = v;
+  }
+  try { fs.writeFileSync(alertLedgerPath(), JSON.stringify(pruned)); } catch {}
+  return pruned;
+}
+
+function fireNotification(title, body, { urgent = false } = {}) {
+  try {
+    if (!Notification.isSupported()) return false;
+    const n = new Notification({
+      title,
+      body,
+      silent: !urgent,
+    });
+    n.show();
+    return true;
+  } catch (e) {
+    console.warn('[alerts] notification failed:', e?.message || e);
+    return false;
+  }
+}
+
+ipcMain.handle('budgets:get', () => loadBudgets());
+
+ipcMain.handle('budgets:set', (_e, budgets) => {
+  if (!budgets || typeof budgets !== 'object') return { ok: false, error: 'invalid' };
+  return saveBudgets(budgets);
+});
+
+// Renderer sends an array of candidate alerts; main filters already-fired
+// ones against the ledger and shows notifications for the rest.
+// Each alert: { key, title, body, severity: 'info' | 'warn' | 'critical' }
+ipcMain.handle('alerts:maybe-fire', (_e, alerts) => {
+  if (!Array.isArray(alerts) || alerts.length === 0) return { fired: 0 };
+  const ledger = loadAlertLedger();
+  let fired = 0;
+  for (const a of alerts) {
+    if (!a || typeof a.key !== 'string') continue;
+    if (ledger[a.key]) continue;
+    const urgent = a.severity === 'critical';
+    if (fireNotification(a.title || 'Tokenly', a.body || '', { urgent })) {
+      ledger[a.key] = Date.now();
+      fired++;
+    }
+  }
+  if (fired > 0) saveAlertLedger(ledger);
+  return { fired };
+});
+
+// Daily spend summary — fired at most once per local calendar day. Dedupe key
+// is built from today's YYYY-MM-DD in the local timezone.
+ipcMain.handle('alerts:maybe-fire-summary', (_e, payload) => {
+  if (!payload || typeof payload !== 'object') return { fired: false };
+  const now = new Date();
+  const localDay = now.getFullYear() + '-' +
+    String(now.getMonth() + 1).padStart(2, '0') + '-' +
+    String(now.getDate()).padStart(2, '0');
+  const key = `summary:${localDay}`;
+  const ledger = loadAlertLedger();
+  if (ledger[key]) return { fired: false, reason: 'already_fired_today' };
+  const ok = fireNotification(payload.title || 'Today\'s AI spend', payload.body || '');
+  if (!ok) return { fired: false, reason: 'notification_unavailable' };
+  ledger[key] = Date.now();
+  saveAlertLedger(ledger);
+  return { fired: true };
+});
+
 async function fetchUsage(provider, key, days) {
   const now = Math.floor(Date.now() / 1000);
   const start = now - days * 86400;
@@ -546,25 +674,32 @@ async function fetchOpenAI(key, start, end, days) {
 
   let totalCost = 0;
   const byLineItem = {};
+  const costByDay = new Map();
   if (!cR.error) {
     for (const page of cR.pages) for (const bucket of page.data || []) {
+      const bucketDayKey = bucket.start_time;
+      let bucketCost = 0;
       for (const r of bucket.results || []) {
         const amt = Number((r.amount && r.amount.value) || 0);
         if (!Number.isFinite(amt)) continue;
         totalCost += amt;
+        bucketCost += amt;
         const li = r.line_item || 'other';
         byLineItem[li] = (byLineItem[li] || 0) + amt;
       }
+      costByDay.set(bucketDayKey, (costByDay.get(bucketDayKey) || 0) + bucketCost);
     }
   }
 
   const sortedTrend = [...trend.entries()].sort(([a], [b]) => a - b).map(([_, v]) => v);
+  const sortedCostTrend = [...costByDay.entries()].sort(([a], [b]) => a - b).map(([_, v]) => v);
 
   return {
     totals: { input: inTok, output: outTok, cached, requests: req, cost: totalCost, currency: 'USD' },
     models: Object.values(byModel).sort((a, b) => (b.input + b.output) - (a.input + a.output)),
     lineItems: Object.entries(byLineItem).sort((a, b) => b[1] - a[1]).map(([name, cost]) => ({ name, cost })),
     trend: sortedTrend,
+    costTrend: sortedCostTrend,
     windowDays: days,
     note: null,
   };
@@ -632,24 +767,30 @@ async function fetchAnthropic(key, start, end, days) {
   };
 
   let totalCost = 0;
+  const costByDay = new Map();
   if (!cR.error) {
     const seenBuckets = new Set();
     for (const page of cR.pages) for (const bucket of page.data || []) {
       const key = bucket.starting_at;
       if (seenBuckets.has(key)) continue;
       seenBuckets.add(key);
+      let bucketCost = 0;
       for (const r of bucket.results || []) {
-        totalCost += readAmount(r.amount);
+        bucketCost += readAmount(r.amount);
       }
+      totalCost += bucketCost;
+      costByDay.set(key, (costByDay.get(key) || 0) + bucketCost);
     }
   }
 
   const sortedTrend = [...trend.entries()].sort().map(([_, v]) => v);
+  const sortedCostTrend = [...costByDay.entries()].sort().map(([_, v]) => v);
 
   return {
     totals: { input: inTok, output: outTok, cache_creation: cacheIn, cache_read: cacheRead, requests: req, cost: totalCost, currency: 'USD' },
     models: Object.values(byModel).sort((a, b) => (b.input + b.output + b.cache_read) - (a.input + a.output + a.cache_read)),
     trend: sortedTrend,
+    costTrend: sortedCostTrend,
     windowDays: days,
     note: null,
   };
@@ -694,6 +835,7 @@ async function fetchOpenRouter(key, days) {
 
   const byModel = {};
   const trend = new Map();
+  const costByDay = new Map();
   let inTok = 0, outTok = 0, reasoningTok = 0, req = 0, totalCost = 0;
   for (const r of filtered) {
     const m = r.model || 'unknown';
@@ -708,18 +850,22 @@ async function fetchOpenRouter(key, days) {
     outTok += r.completion_tokens || 0;
     reasoningTok += r.reasoning_tokens || 0;
     req += r.requests || 0;
-    totalCost += Number(r.usage) || 0;
+    const rowCost = Number(r.usage) || 0;
+    totalCost += rowCost;
     const dayTokens = (r.prompt_tokens || 0) + (r.completion_tokens || 0);
     trend.set(r.date, (trend.get(r.date) || 0) + dayTokens);
+    costByDay.set(r.date, (costByDay.get(r.date) || 0) + rowCost);
   }
 
   const sortedTrend = [...trend.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([_, v]) => v);
+  const sortedCostTrend = [...costByDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([_, v]) => v);
   const effectiveDays = Math.min(days, 30);
 
   return {
     totals: { input: inTok, output: outTok, reasoning: reasoningTok, requests: req, cost: totalCost, currency: 'USD' },
     models: Object.values(byModel).sort((a, b) => (b.input + b.output) - (a.input + a.output)),
     trend: sortedTrend,
+    costTrend: sortedCostTrend,
     windowDays: effectiveDays,
     balance,
     note: days > 30 ? 'OpenRouter only exposes the last 30 completed UTC days.' : null,

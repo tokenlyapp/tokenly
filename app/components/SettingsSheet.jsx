@@ -8,6 +8,7 @@ function SettingsSheet({
   traySource = 'all', onTraySourceChange,
   currentDays = 30,
   onOpenPricing,
+  onOpenBudgets,
 }) {
   // Human label for the current window: "24h" / "7d" / "Last 30d" etc.
   const rangeShort = {
@@ -149,7 +150,7 @@ function SettingsSheet({
             style={{
               width: '100%', textAlign: 'left',
               background: t.card, border: `1px solid ${t.cardBorder}`,
-              borderRadius: 10, padding: '10px 12px', marginBottom: 12,
+              borderRadius: 10, padding: '10px 12px', marginBottom: 8,
               display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
               cursor: 'pointer', fontFamily: 'inherit', color: t.text,
             }}
@@ -158,6 +159,28 @@ function SettingsSheet({
               <div style={{ fontSize: 12, fontWeight: 600 }}>View current pricing</div>
               <div style={{ fontSize: 10, color: t.textMute, marginTop: 2, lineHeight: 1.45 }}>
                 Per-model USD rates the app uses to estimate cost. Auto-refreshed daily.
+              </div>
+            </div>
+            <span style={{ color: t.textDim, flexShrink: 0, fontSize: 14 }}>→</span>
+          </button>
+        )}
+
+        {/* Budget alerts — opens the budgets configuration sheet */}
+        {onOpenBudgets && (
+          <button
+            onClick={onOpenBudgets}
+            style={{
+              width: '100%', textAlign: 'left',
+              background: t.card, border: `1px solid ${t.cardBorder}`,
+              borderRadius: 10, padding: '10px 12px', marginBottom: 12,
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+              cursor: 'pointer', fontFamily: 'inherit', color: t.text,
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>Budget alerts</div>
+              <div style={{ fontSize: 10, color: t.textMute, marginTop: 2, lineHeight: 1.45 }}>
+                Daily $ thresholds for API spend + daily spend summary notification.
               </div>
             </div>
             <span style={{ color: t.textDim, flexShrink: 0, fontSize: 14 }}>→</span>

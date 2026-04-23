@@ -7,6 +7,7 @@ function LLMUsageApp() {
   const [expanded, setExpanded] = useStateA({ 'claude-code': true, 'codex': true, 'gemini-cli': true, openai: true, anthropic: true, openrouter: false });
   const [sheetOpen, setSheetOpen] = useStateA(false);
   const [pricingOpen, setPricingOpen] = useStateA(false);
+  const [budgetsOpen, setBudgetsOpen] = useStateA(false);
   const [spinning, setSpinning] = useStateA(false);
   const [days, setDays] = useStateA(() => {
     try { return parseInt(localStorage.getItem('windowDays') || '30', 10) || 30; } catch { return 30; }
@@ -133,6 +134,121 @@ function LLMUsageApp() {
     if (window.api?.onRefreshNow) window.api.onRefreshNow(() => refreshAll());
     if (window.api?.onOpenPricing) window.api.onOpenPricing(() => setPricingOpen(true));
   }, [refreshAll]);
+
+  // ---- Budget alerts (API-only daily $ thresholds) ----------------------
+  // Runs on every successful refresh. Candidate alerts are sent to main,
+  // which dedupes against a per-day ledger before showing notifications.
+  useEffectA(() => {
+    if (!booted) return;
+    if (!window.api?.maybeFireAlerts) return;
+    (async () => {
+      try {
+        const budgets = await window.api.getBudgets();
+        if (!budgets?.enabled) return;
+        const daily = budgets.daily || {};
+        const thresholds = budgets.thresholds || [0.5, 0.8, 1.0];
+        const dayKey = new Date().toISOString().slice(0, 10); // UTC
+        const alerts = [];
+
+        let overallToday = 0;
+        for (const pid of ['openai', 'anthropic', 'openrouter']) {
+          const u = usage[pid];
+          if (!u || u === 'loading' || !u.ok) continue;
+          const costTrend = u.data?.costTrend || [];
+          const todayCost = Number(costTrend[costTrend.length - 1]) || 0;
+          overallToday += todayCost;
+
+          const limit = Number(daily[pid]);
+          if (!Number.isFinite(limit) || limit <= 0) continue;
+          for (const th of thresholds) {
+            if (todayCost >= limit * th) {
+              const pct = Math.round(th * 100);
+              const provName = PROVIDERS.find((p) => p.id === pid)?.name || pid;
+              alerts.push({
+                key: `daily:${pid}:${dayKey}:${th}`,
+                title: `${provName}: ${pct}% of daily budget`,
+                body: `$${todayCost.toFixed(2)} of $${limit.toFixed(2)} used today.`,
+                severity: th >= 1 ? 'critical' : th >= 0.8 ? 'warn' : 'info',
+              });
+            }
+          }
+        }
+
+        const overallLimit = Number(daily._overall);
+        if (Number.isFinite(overallLimit) && overallLimit > 0) {
+          for (const th of thresholds) {
+            if (overallToday >= overallLimit * th) {
+              const pct = Math.round(th * 100);
+              alerts.push({
+                key: `daily:_overall:${dayKey}:${th}`,
+                title: `Overall API spend: ${pct}% of daily budget`,
+                body: `$${overallToday.toFixed(2)} of $${overallLimit.toFixed(2)} used today across APIs.`,
+                severity: th >= 1 ? 'critical' : th >= 0.8 ? 'warn' : 'info',
+              });
+            }
+          }
+        }
+
+        if (alerts.length > 0) {
+          await window.api.maybeFireAlerts(alerts);
+        }
+      } catch (e) {
+        console.warn('[budgets] evaluation failed:', e);
+      }
+    })();
+  }, [usage, booted]);
+
+  // ---- Daily spend summary notification ----------------------------------
+  // Checked every 5 min when the app is foregrounded. Main process enforces
+  // once-per-day dedup, so over-eager polling here is harmless.
+  useEffectA(() => {
+    if (!booted) return;
+    if (!window.api?.maybeFireDailySummary) return;
+
+    const check = async () => {
+      try {
+        const budgets = await window.api.getBudgets();
+        if (!budgets?.summary?.enabled) return;
+        const targetHour = Number(budgets.summary.hour);
+        const now = new Date();
+        if (!Number.isFinite(targetHour) || now.getHours() < targetHour) return;
+
+        const parts = [];
+        let totalApi = 0;
+        const shortName = (pid) => (PROVIDERS.find((p) => p.id === pid)?.abbr || pid);
+
+        for (const pid of ['openai', 'anthropic', 'openrouter']) {
+          const u = usage[pid];
+          if (!u || u === 'loading' || !u.ok) continue;
+          const todayCost = Number((u.data?.costTrend || []).slice(-1)[0]) || 0;
+          if (todayCost > 0) {
+            parts.push(`${shortName(pid)} $${todayCost.toFixed(2)}`);
+            totalApi += todayCost;
+          }
+        }
+        for (const pid of ['claude-code', 'codex', 'gemini-cli']) {
+          const u = usage[pid];
+          if (!u || u === 'loading' || !u.ok) continue;
+          const todayTokens = Number((u.data?.trend || []).slice(-1)[0]) || 0;
+          if (todayTokens > 0) {
+            parts.push(`${shortName(pid)} ${fmt(todayTokens)} toks`);
+          }
+        }
+
+        const title = totalApi > 0
+          ? `Today's AI spend: $${totalApi.toFixed(2)}`
+          : `Today's AI usage`;
+        const body = parts.length > 0 ? parts.join(' · ') : 'No usage recorded today yet.';
+        await window.api.maybeFireDailySummary({ title, body });
+      } catch (e) {
+        console.warn('[summary] check failed:', e);
+      }
+    };
+
+    check(); // once on mount after boot
+    const id = setInterval(check, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [booted, usage]);
 
   // Keep the menu-bar title synced with aggregated tokens whenever usage, mode,
   // or source changes. Small debounce so rapid usage updates don't spam IPC.
@@ -318,10 +434,15 @@ function LLMUsageApp() {
         onTraySourceChange={updateTraySource}
         currentDays={days}
         onOpenPricing={() => { setSheetOpen(false); setPricingOpen(true); }}
+        onOpenBudgets={() => { setSheetOpen(false); setBudgetsOpen(true); }}
       />
       <PricingSheet
         open={pricingOpen}
         onClose={() => setPricingOpen(false)}
+      />
+      <BudgetsSheet
+        open={budgetsOpen}
+        onClose={() => setBudgetsOpen(false)}
       />
     </div>
     </BadgeStyleContext.Provider>

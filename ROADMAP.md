@@ -20,6 +20,16 @@ Tiers:
 - Same code signature across versions preserves macOS Keychain ACL — users don't re-auth for saved keys
 - Dual-upload discipline: GitHub Release (for existing users) **and** Netlify Blob (for new buyers) — forget either and one audience is stuck
 
+### 1.4. Budget alerts + daily spend notifications — SHIPPED 1.5.0 (pending release)
+Scope: **API sources only** (OpenAI / Anthropic / OpenRouter). List-price estimates from local tools are not real money for subscription users — they don't participate in $ budgets. Future token-based thresholds for local tools are a v2.
+- Daily $ budgets per provider + overall (sum across APIs)
+- Thresholds fire at 50% / 80% / 100% — native macOS notifications, once per UTC day per threshold (dedup via ledger at `~/Library/Application Support/Tokenly/alerts.json`)
+- Daily spend summary notification at user-chosen local hour (default 5pm), mixing API $ + local token totals
+- Budgets persisted to `~/Library/Application Support/Tokenly/budgets.json` (not encrypted — no secrets)
+- New IPC surface: `budgets:get` / `budgets:set` / `alerts:maybe-fire` / `alerts:maybe-fire-summary`
+- Enabled by the `costTrend` array added to every API fetcher — per-day cost bucketing that unlocks §2.2 "Compare ranges" work too
+- v2 follow-ups: monthly budgets (needs always-on 30d fetch), token-based thresholds for local tools, colored in-app progress bars under primary counters
+
 ### 1.2. Live pricing refresh from a hosted table — SHIPPED 1.4.0 (pending release)
 - Hosted JSON at `https://trytokenly.app/pricing.json` with versioned schema (`schema_version: 1`)
 - App fetches 8s after launch + every 24h + on-demand via tray menu → "Refresh Pricing Tables"
@@ -51,15 +61,6 @@ Third keyless card. Reads `~/.gemini/tmp/<project_hash>/chats/*.json`, parses pe
 ---
 
 ## Tier 1 — Ship next
-
-### 1.4. Budget alerts + daily spend notifications
-**Impact:** 9/10. Users who track usage want to *act* on it. "You've spent $38 of your $50 daily budget" at 80% threshold is the #1 reason people keep Tokenly open.
-**Effort:** 6h.
-**What it looks like:** Settings adds "Daily budget" + "Monthly budget" per provider. Native macOS notifications at 80% and 100%. Colored progress bar beneath primary counter.
-**Key moves:**
-- Persist budgets alongside keys (same encrypted `keys.enc` store)
-- Compute on every refresh; notify once per threshold per day (ledger-persisted to avoid spam)
-- `new Notification(title, options)` — native macOS banners
 
 ### 1.6. Product Hunt + Hacker News launch
 **Impact:** 10/10 (for acquisition), 0/10 (for product). First 500 users come from here. Do it once, do it well.

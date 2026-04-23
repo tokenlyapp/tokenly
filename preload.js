@@ -14,4 +14,8 @@ contextBridge.exposeInMainWorld('api', {
   getPricingTables: () => ipcRenderer.invoke('pricing:get-tables'),
   refreshPricing: () => ipcRenderer.invoke('pricing:refresh'),
   onOpenPricing: (cb) => ipcRenderer.on('open-pricing', cb),
+  getBudgets: () => ipcRenderer.invoke('budgets:get'),
+  setBudgets: (budgets) => ipcRenderer.invoke('budgets:set', budgets),
+  maybeFireAlerts: (alerts) => ipcRenderer.invoke('alerts:maybe-fire', alerts),
+  maybeFireDailySummary: (payload) => ipcRenderer.invoke('alerts:maybe-fire-summary', payload),
 });
