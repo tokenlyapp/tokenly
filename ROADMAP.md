@@ -1,6 +1,6 @@
 # Tokenly — Product Roadmap
 
-Prioritized by **impact × feasibility**. Impact is a mix of user value, conversion potential, and differentiation vs. every other AI usage tracker. Feasibility accounts for how much code (or money) a change requires.
+Prioritized by **impact × feasibility**. Current shipped version is **1.3.0**.
 
 Tiers:
 - **Tier 1** — ship within 2 weeks. Compounds fast.
@@ -8,61 +8,64 @@ Tiers:
 - **Tier 3** — within 6 months. Platform bets.
 - **Explicitly not shipping** — scope discipline.
 
-Each item has: a **why**, an estimated **effort** (hours), and any **dependencies**.
+---
+
+## ✅ Shipped in prior sessions
+
+### 1.1. Auto-update via `electron-updater` + GitHub Releases — SHIPPED 1.2.1
+- `electron-updater` polls `latest-mac.yml` on GitHub Releases every 4h
+- Native macOS "Install & Relaunch" prompt when new version downloads
+- Tray menu has manual "Check for Updates…" entry
+- Every release uploads DMG + zip + manifest via `npm run dist:publish` (PAT in `GH_TOKEN`)
+- Same code signature across versions preserves macOS Keychain ACL — users don't re-auth for saved keys
+- Dual-upload discipline: GitHub Release (for existing users) **and** Netlify Blob (for new buyers) — forget either and one audience is stuck
+
+### 1.2. Live pricing refresh from a hosted table — SHIPPED 1.4.0 (pending release)
+- Hosted JSON at `https://trytokenly.app/pricing.json` with versioned schema (`schema_version: 1`)
+- App fetches 8s after launch + every 24h + on-demand via tray menu → "Refresh Pricing Tables"
+- Disk cache at `~/Library/Application Support/Tokenly/pricing.json` loaded at boot
+- Three-layer fallback: remote in-memory → disk cache → bundled `*_PRICING` arrays in `main.js`
+- Rate changes now ship in minutes via a PR + `netlify deploy --prod` — no app rebuild needed
+- Automated monitoring agent (GitHub Action polling LiteLLM + provider pricing pages) is the separate follow-up task
+
+### 1.3. Menubar live tokens — SHIPPED 1.3.0
+Two-axis control:
+- **Source**: All providers / any single provider
+- **Period**: Off / Today / Last Xd (dynamic label) / Both
+- Grouped dropdown: `Local tools (subscription-bundled)` vs `API billing (pay-as-you-go)`
+- Tray tag prefix (`CC`, `AI`, etc.) when a specific source is picked
+- Window-mode formula matches card exactly: `input + output + cache_read + cached`
+
+### 1.5. Gemini CLI support — SHIPPED 1.2
+Third keyless card. Reads `~/.gemini/tmp/<project_hash>/chats/*.json`, parses per-turn `tokens: { input, output, cached, thoughts, tool, total }` blocks. Cleanest schema of any local source.
+
+### Bonus shipped features (not originally in Tier 1 plan but landed along the way)
+
+- **OpenRouter remaining balance strip** — `GET /api/v1/credits` → green ⚡ strip on card showing `$X of $Y remaining`
+- **Codex rate-limit quota strip** — latest `rate_limits` snapshot from rollout events → "5h 32% / 7d 67% / team"
+- **Download recovery** — `/recover` page + edge function + Resend. 365-day re-download window. Canonical sender is `support@trytokenly.app` via ImprovMX + Gmail send-as.
+- **Codex → Codex CLI rename** + Claude Code tooltip clarity (includes Desktop) — shipped 1.3.0
+- **Brand logos default** — toggle defaults to logos not monograms — shipped 1.3.0
+- **macOS public repo + licensing** — source code at `github.com/tokenlyapp/tokenly`, public
 
 ---
 
 ## Tier 1 — Ship next
 
-### 1.1. Auto-update via `electron-updater` + GitHub Releases
-**Impact:** 10/10. Without this, every user is stuck on whatever version they installed. First bug fix after launch creates a permanent fragmentation problem.
-**Effort:** 4h.
-**What it looks like:** Users see a native macOS "A new Tokenly is available" banner. One click installs. No re-download, no re-keychain-prompt.
-**Key moves:**
-- `npm install electron-updater`
-- Add `autoUpdater.checkForUpdatesAndNotify()` to `main.js` app-ready
-- `"publish": [{"provider": "github", "owner": "...", "repo": "tokenly"}]` in `package.json` build config
-- GitHub Actions workflow on `git tag v*` that runs `npm run dist -- --publish always`
-**Blocks:** nothing. Do this first.
-
-### 1.2. Live pricing refresh from a hosted table
-**Impact:** 9/10. Today prices are hardcoded. Anthropic shipped Opus 4.7 with unchanged headline prices but a new tokenizer (~35% more tokens per call) — our estimates drifted by over 30% silently. A remotely-updated price table means users always see accurate estimates without waiting for app updates.
-**Effort:** 6h.
-**What it looks like:** Ship a `pricing.json` on the Netlify site that the app fetches once per day (with 24h fallback to bundled prices on network failure).
-**Key moves:**
-- Host `https://trytokenly.app/pricing.json` with the two tables
-- Add a daily fetch in `main.js` with local cache at `~/Library/Application Support/Tokenly/pricing.json`
-- Fall back to in-bundle prices if fetch fails
-**Blocks:** none. Pairs naturally with auto-update (shared infra).
-
-### 1.3. Menubar live total — show current cost in the tray itself
-**Impact:** 9/10. The app is visible zero pixels when collapsed. Surfacing `$45.22` right next to the clock transforms Tokenly from "something you open" to "ambient utility." Every competitor does this; we don't yet.
-**Effort:** 3h.
-**What it looks like:** Tray icon shows `⦿ $45.22` (icon + tabular amount). Click still opens popover. User can toggle between showing total, today's spend, or nothing.
-**Key moves:**
-- `tray.setTitle(' $45.22')` updated on every refresh
-- Setting for: Total / Today / Hidden
-- Careful formatting for small + large values (`$0.14`, `$1.2K`, `$15`)
-**Blocks:** none.
-
 ### 1.4. Budget alerts + daily spend notifications
-**Impact:** 9/10. Users who track usage want to *act* on it. "You've spent $38 of your $50 daily budget" fires at 80% threshold. Missed budget events are the #1 reason people keep Tokenly open.
+**Impact:** 9/10. Users who track usage want to *act* on it. "You've spent $38 of your $50 daily budget" at 80% threshold is the #1 reason people keep Tokenly open.
 **Effort:** 6h.
-**What it looks like:** Settings adds "Daily budget" and "Monthly budget" fields per provider. Native macOS notifications at 80% and 100%. Small colored bar beneath the primary counter showing budget progress.
+**What it looks like:** Settings adds "Daily budget" + "Monthly budget" per provider. Native macOS notifications at 80% and 100%. Colored progress bar beneath primary counter.
 **Key moves:**
-- Persist budgets alongside keys (encrypted, same store)
-- Compute on every refresh; notify once per threshold crossing per day (ledger-persisted to avoid spam)
-- Use `Notification` API via `new Notification(title, options)` — native macOS banners
-**Blocks:** none.
-
-### 1.5. Gemini CLI support (read `~/.gemini/`) — ✅ **SHIPPED in v1.2**
-**Impact delivered:** Third keyless card alongside Claude Code and Codex. Reads `~/.gemini/tmp/<project_hash>/chats/*.json` and captures per-turn `{ input, output, cached, thoughts, tool, total }` directly from Google's session format. Cleanest parser of all three local sources.
+- Persist budgets alongside keys (same encrypted `keys.enc` store)
+- Compute on every refresh; notify once per threshold per day (ledger-persisted to avoid spam)
+- `new Notification(title, options)` — native macOS banners
 
 ### 1.6. Product Hunt + Hacker News launch
 **Impact:** 10/10 (for acquisition), 0/10 (for product). First 500 users come from here. Do it once, do it well.
 **Effort:** 8h to prep.
-**What it looks like:** 60-second demo GIF, tight one-paragraph pitch, launch comment that tells the "why" ("I was tired of three open dashboards"), at least 3 friends primed to upvote in the first 2 hours, live on discord/twitter answering questions hour-by-hour for the first 24h.
-**Blocks:** auto-update (1.1) must be shipped before launch — otherwise everyone is forever on v1.0.
+**What it looks like:** 60-second demo GIF, tight one-paragraph pitch, launch comment that tells the "why," at least 3 friends primed to upvote in first 2 hours, live answering questions hour-by-hour for 24h.
+**Blocks:** Nothing blocking. Auto-update already shipped so post-launch bug fixes propagate automatically — the original concern is resolved.
 
 ---
 
@@ -138,7 +141,7 @@ Each item has: a **why**, an estimated **effort** (hours), and any **dependencie
 ### 3.4. Setapp listing
 **Impact:** 8/10. Passive, high-intent audience. Setapp users already pay a subscription and try anything new; zero-marketing revenue.
 **Effort:** 8h (notarized DMG + their review).
-**Blocks:** auto-update (1.1). Setapp insists their bundle handles updates, so we'd need to conditionally disable electron-updater when running inside Setapp.
+**Catch:** auto-update now shipped, so Setapp requires conditionally disabling electron-updater when running inside Setapp (they handle updates via their own bundle). Add a packaged-env check.
 
 ### 3.5. Pricing history / pricing changelog
 **Impact:** 6/10. Nerd delight. Every pricing table change is silently absorbed; surfacing "Claude Opus 4.7 dropped from $15/$75 to $5/$25 on April 14" is a story people share.

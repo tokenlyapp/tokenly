@@ -154,6 +154,7 @@ function showTrayMenu() {
       for (const w of BrowserWindow.getAllWindows()) w.webContents.send('refresh-now');
     }},
     { label: 'Check for Updates…', click: () => checkForUpdatesInteractive() },
+    { label: 'View Pricing…', click: () => openPricingFromTray() },
     { type: 'separator' },
     { label: `Tokenly ${app.getVersion()}`, enabled: false },
     { label: 'Quit Tokenly', role: 'quit' },
@@ -270,6 +271,7 @@ app.whenReady().then(() => {
   startCodexWatcher();
   startGeminiWatcher();
   setupAutoUpdater();
+  setupPricingRefresh();
   // Default to popover mode on launch (no dock clutter) unless user had detached.
   const prefersDesktop = (() => {
     try {
@@ -404,6 +406,50 @@ ipcMain.handle('usage:fetch', async (_e, provider, rangeDays) => {
 });
 
 ipcMain.handle('open-external', (_e, url) => shell.openExternal(url));
+
+// Serialize pricing tables for the renderer. Remote tables already have
+// string `match` fields; bundled tables use RegExp objects, which must be
+// converted to their `.source` string before crossing the IPC boundary.
+function getPricingTablesForRenderer() {
+  if (remotePricing) {
+    return {
+      source: 'remote',
+      updated_at: remotePricing.updated_at,
+      fetched_at: lastPricingFetchAt,
+      providers: remotePricing.providers,
+    };
+  }
+  const serialize = (arr) => arr.map((r) => ({
+    label: r.label, match: r.match.source, input: r.input, output: r.output,
+  }));
+  return {
+    source: 'bundled',
+    updated_at: null,
+    fetched_at: 0,
+    providers: {
+      claude: {
+        multipliers: { cache_5m_write: 1.25, cache_1h_write: 2.0, cache_read: 0.1 },
+        default: { input: 3, output: 15 },
+        models: serialize(CLAUDE_PRICING),
+      },
+      openai: {
+        multipliers: { cache_read: 0.1, reasoning_included_in_output: true },
+        default: { input: 2.50, output: 10 },
+        models: serialize(OPENAI_PRICING),
+      },
+      gemini: {
+        multipliers: { cache_read: 0.25, thoughts_as_output: true, tool_as_input: true },
+        default: { input: 0.30, output: 2.50 },
+        models: serialize(GEMINI_PRICING),
+      },
+    },
+  };
+}
+ipcMain.handle('pricing:get-tables', () => getPricingTablesForRenderer());
+ipcMain.handle('pricing:refresh', async () => {
+  const result = await fetchRemotePricing();
+  return { ...result, tables: getPricingTablesForRenderer() };
+});
 
 async function fetchUsage(provider, key, days) {
   const now = Math.floor(Date.now() / 1000);
@@ -686,23 +732,151 @@ async function fetchOpenRouter(key, days) {
 // gives us real-time, per-message token usage with no API key required.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Remote pricing table (ships independently of the app binary)
+// ---------------------------------------------------------------------------
+// Rates change more often than we cut releases. pricing.json on trytokenly.app
+// holds the authoritative table. The app fetches on launch + every 24h and
+// caches to disk. The bundled CLAUDE_PRICING / OPENAI_PRICING / GEMINI_PRICING
+// arrays below remain as the permanent fallback if network + disk cache are
+// both unavailable.
+//
+// Lookup order: remote in-memory → disk cache → bundled defaults.
+
+const REMOTE_PRICING_URL = 'https://trytokenly.app/pricing.json';
+const PRICING_SCHEMA_VERSION = 1;
+
+let remotePricing = null;
+let lastPricingFetchAt = 0;
+
+function pricingCachePath() {
+  return path.join(app.getPath('userData'), 'pricing.json');
+}
+
+function validatePricingPayload(data) {
+  if (!data || typeof data !== 'object') return false;
+  if (data.schema_version !== PRICING_SCHEMA_VERSION) return false;
+  if (!data.providers || typeof data.providers !== 'object') return false;
+  for (const k of ['claude', 'openai', 'gemini']) {
+    const p = data.providers[k];
+    if (!p || !Array.isArray(p.models)) return false;
+  }
+  return true;
+}
+
+function loadPricingFromDisk() {
+  try {
+    const p = pricingCachePath();
+    if (!fs.existsSync(p)) return;
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (validatePricingPayload(data)) {
+      remotePricing = data;
+      console.log('[pricing] loaded disk cache, updated_at=', data.updated_at);
+    }
+  } catch (e) {
+    console.warn('[pricing] disk cache read failed:', e?.message || e);
+  }
+}
+
+async function fetchRemotePricing() {
+  try {
+    const res = await fetch(REMOTE_PRICING_URL, {
+      headers: { 'User-Agent': `Tokenly/${app.getVersion()}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return { ok: false, reason: 'http_' + res.status };
+    const data = await res.json();
+    if (!validatePricingPayload(data)) return { ok: false, reason: 'invalid_schema' };
+    remotePricing = data;
+    lastPricingFetchAt = Date.now();
+    try { fs.writeFileSync(pricingCachePath(), JSON.stringify(data)); } catch {}
+    console.log('[pricing] refreshed, updated_at=', data.updated_at);
+    return { ok: true, data };
+  } catch (e) {
+    return { ok: false, reason: 'network', error: String(e?.message || e) };
+  }
+}
+
+function setupPricingRefresh() {
+  loadPricingFromDisk();
+  setTimeout(() => fetchRemotePricing().catch(() => {}), 8_000);
+  setInterval(() => fetchRemotePricing().catch(() => {}), 24 * 60 * 60 * 1000);
+}
+
+// Look up a remote rate row for a provider/model. Returns null if no remote
+// data is loaded or no row matches — caller falls back to bundled defaults.
+function remotePriceFor(providerKey, modelName) {
+  if (!remotePricing) return null;
+  const provider = remotePricing.providers?.[providerKey];
+  if (!provider || !Array.isArray(provider.models)) return null;
+  const m = String(modelName || '');
+  for (const row of provider.models) {
+    if (typeof row.match !== 'string') continue;
+    try {
+      if (new RegExp(row.match).test(m)) {
+        const input = Number(row.input), output = Number(row.output);
+        if (Number.isFinite(input) && Number.isFinite(output)) return { input, output };
+      }
+    } catch { /* malformed regex on remote row; skip */ }
+  }
+  const d = provider.default;
+  if (d) {
+    const input = Number(d.input), output = Number(d.output);
+    if (Number.isFinite(input) && Number.isFinite(output)) return { input, output };
+  }
+  return null;
+}
+
+// Open the pricing sheet from the tray. Ensures the popover is visible, then
+// tells the renderer to open the sheet.
+function openPricingFromTray() {
+  try {
+    if (typeof togglePopover === 'function' && (!popoverWin || !popoverWin.isVisible())) {
+      togglePopover();
+    }
+  } catch {}
+  setTimeout(() => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      try { w.webContents.send('open-pricing'); } catch {}
+    }
+  }, 80);
+}
+
+async function refreshPricingInteractive() {
+  const result = await fetchRemotePricing();
+  if (result.ok) {
+    dialog.showMessageBox({
+      type: 'info',
+      message: 'Pricing tables refreshed.',
+      detail: `Rates as of ${result.data.updated_at}`,
+      buttons: ['OK'],
+    });
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('refresh-now');
+  } else {
+    dialog.showErrorBox('Pricing refresh failed',
+      `Using last cached rates. Reason: ${result.reason}`);
+  }
+}
+
 // Per-million-token USD pricing for Claude models (standard tier).
 // Cache write = 1.25x input (5m) or 2x input (1h). Cache read = 0.1x input.
-// Updated whenever Anthropic announces changes.
+// Bundled as a permanent fallback — the remote table above is authoritative.
 const CLAUDE_PRICING = [
   // Opus 4.5+ reduced price to $5/$25 (down from $15/$75 on Opus 3).
-  { match: /^claude-opus-4-[5-9]/, input: 5,    output: 25 },
-  { match: /^claude-opus-4/,       input: 5,    output: 25 },
-  { match: /^claude-sonnet-4/,     input: 3,    output: 15 },
-  { match: /^claude-haiku-4-5/,    input: 1,    output: 5 },
-  { match: /^claude-haiku-4/,      input: 0.8,  output: 4 },
-  { match: /^claude-3-7-sonnet/,   input: 3,    output: 15 },
-  { match: /^claude-3-5-sonnet/,   input: 3,    output: 15 },
-  { match: /^claude-3-5-haiku/,    input: 0.8,  output: 4 },
-  { match: /^claude-3-opus/,       input: 15,   output: 75 },
-  { match: /^claude-3-haiku/,      input: 0.25, output: 1.25 },
+  { label: 'Opus 4.5+',         match: /^claude-opus-4-[5-9]/, input: 5,    output: 25 },
+  { label: 'Opus 4 (pre-4.5)',  match: /^claude-opus-4/,       input: 5,    output: 25 },
+  { label: 'Sonnet 4',          match: /^claude-sonnet-4/,     input: 3,    output: 15 },
+  { label: 'Haiku 4.5',         match: /^claude-haiku-4-5/,    input: 1,    output: 5 },
+  { label: 'Haiku 4 (pre-4.5)', match: /^claude-haiku-4/,      input: 0.8,  output: 4 },
+  { label: 'Claude 3.7 Sonnet', match: /^claude-3-7-sonnet/,   input: 3,    output: 15 },
+  { label: 'Claude 3.5 Sonnet', match: /^claude-3-5-sonnet/,   input: 3,    output: 15 },
+  { label: 'Claude 3.5 Haiku',  match: /^claude-3-5-haiku/,    input: 0.8,  output: 4 },
+  { label: 'Claude 3 Opus',     match: /^claude-3-opus/,       input: 15,   output: 75 },
+  { label: 'Claude 3 Haiku',    match: /^claude-3-haiku/,      input: 0.25, output: 1.25 },
 ];
 function priceFor(model) {
+  const remote = remotePriceFor('claude', model);
+  if (remote) return remote;
   const m = String(model || '');
   for (const p of CLAUDE_PRICING) if (p.match.test(m)) return p;
   return { input: 3, output: 15 }; // safe Sonnet default
@@ -839,20 +1013,22 @@ function pingVisibleWindows() {
 // ---------------------------------------------------------------------------
 
 const OPENAI_PRICING = [
-  { match: /^gpt-5\.4-codex/,   input: 1.25, output: 10   },
-  { match: /^gpt-5\.4-mini/,    input: 0.25, output: 2    },
-  { match: /^gpt-5\.4/,         input: 2.50, output: 15   },
-  { match: /^gpt-5-codex/,      input: 1.25, output: 10   },
-  { match: /^gpt-5-mini/,       input: 0.25, output: 2    },
-  { match: /^gpt-5/,            input: 1.25, output: 10   },
-  { match: /^o1-mini/,          input: 1.10, output: 4.40 },
-  { match: /^o1/,               input: 15,   output: 60   },
-  { match: /^gpt-4\.1-mini/,    input: 0.40, output: 1.60 },
-  { match: /^gpt-4\.1/,         input: 2,    output: 8    },
-  { match: /^gpt-4o-mini/,      input: 0.15, output: 0.60 },
-  { match: /^gpt-4o/,           input: 2.50, output: 10   },
+  { label: 'GPT-5.4 Codex', match: /^gpt-5\.4-codex/,   input: 1.25, output: 10   },
+  { label: 'GPT-5.4 mini',  match: /^gpt-5\.4-mini/,    input: 0.25, output: 2    },
+  { label: 'GPT-5.4',       match: /^gpt-5\.4/,         input: 2.50, output: 15   },
+  { label: 'GPT-5 Codex',   match: /^gpt-5-codex/,      input: 1.25, output: 10   },
+  { label: 'GPT-5 mini',    match: /^gpt-5-mini/,       input: 0.25, output: 2    },
+  { label: 'GPT-5',         match: /^gpt-5/,            input: 1.25, output: 10   },
+  { label: 'o1-mini',       match: /^o1-mini/,          input: 1.10, output: 4.40 },
+  { label: 'o1',            match: /^o1/,               input: 15,   output: 60   },
+  { label: 'GPT-4.1 mini',  match: /^gpt-4\.1-mini/,    input: 0.40, output: 1.60 },
+  { label: 'GPT-4.1',       match: /^gpt-4\.1/,         input: 2,    output: 8    },
+  { label: 'GPT-4o mini',   match: /^gpt-4o-mini/,      input: 0.15, output: 0.60 },
+  { label: 'GPT-4o',        match: /^gpt-4o/,           input: 2.50, output: 10   },
 ];
 function openaiPriceFor(model) {
+  const remote = remotePriceFor('openai', model);
+  if (remote) return remote;
   const m = String(model || '');
   for (const p of OPENAI_PRICING) if (p.match.test(m)) return p;
   return { input: 2.50, output: 10 }; // safe 4o default
@@ -1018,17 +1194,19 @@ function startCodexWatcher() {
 // thoughts = reasoning (priced as output). cached = cached input (priced at 0.25x input).
 // tool = tokens consumed by tool call context (priced at input rate).
 const GEMINI_PRICING = [
-  { match: /^gemini-3-pro/,         input: 2.00, output: 12.00 },
-  { match: /^gemini-3-flash-lite/,  input: 0.10, output: 0.40  },
-  { match: /^gemini-3-flash/,       input: 0.30, output: 2.50  },
-  { match: /^gemini-2\.5-pro/,      input: 1.25, output: 10.00 },
-  { match: /^gemini-2\.5-flash-lite/,input: 0.10, output: 0.40 },
-  { match: /^gemini-2\.5-flash/,    input: 0.30, output: 2.50  },
-  { match: /^gemini-2\.0-flash/,    input: 0.15, output: 0.60  },
-  { match: /^gemini-1\.5-pro/,      input: 1.25, output: 5.00  },
-  { match: /^gemini-1\.5-flash/,    input: 0.075, output: 0.30 },
+  { label: 'Gemini 3 Pro',          match: /^gemini-3-pro/,          input: 2.00,  output: 12.00 },
+  { label: 'Gemini 3 Flash Lite',   match: /^gemini-3-flash-lite/,   input: 0.10,  output: 0.40  },
+  { label: 'Gemini 3 Flash',        match: /^gemini-3-flash/,        input: 0.30,  output: 2.50  },
+  { label: 'Gemini 2.5 Pro',        match: /^gemini-2\.5-pro/,       input: 1.25,  output: 10.00 },
+  { label: 'Gemini 2.5 Flash Lite', match: /^gemini-2\.5-flash-lite/,input: 0.10,  output: 0.40  },
+  { label: 'Gemini 2.5 Flash',      match: /^gemini-2\.5-flash/,     input: 0.30,  output: 2.50  },
+  { label: 'Gemini 2.0 Flash',      match: /^gemini-2\.0-flash/,     input: 0.15,  output: 0.60  },
+  { label: 'Gemini 1.5 Pro',        match: /^gemini-1\.5-pro/,       input: 1.25,  output: 5.00  },
+  { label: 'Gemini 1.5 Flash',      match: /^gemini-1\.5-flash/,     input: 0.075, output: 0.30  },
 ];
 function geminiPriceFor(model) {
+  const remote = remotePriceFor('gemini', model);
+  if (remote) return remote;
   const m = String(model || '');
   for (const p of GEMINI_PRICING) if (p.match.test(m)) return p;
   return { input: 0.30, output: 2.50 }; // safe Flash default

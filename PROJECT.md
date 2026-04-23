@@ -1,8 +1,40 @@
 # Tokenly — Project Memory
 
-> Live monitor for AI spend across Claude Code, Codex, OpenAI, Anthropic, and OpenRouter. macOS menu-bar app. Keys stay on your Mac.
+> Live monitor for AI spend across Claude Code, Codex CLI, Gemini CLI, OpenAI API, Anthropic API, and OpenRouter. macOS menu-bar app. Keys stay on your Mac.
 
-This document is the complete build record as of the first public release. Read it before making architectural changes — it captures hard-won context that's easy to re-break.
+This document is the complete build record. Read it before making architectural changes — it captures hard-won context that's easy to re-break.
+
+---
+
+## 0. Current state (session handoff)
+
+**Current shipped version:** `1.3.0` — on GitHub Releases + Netlify Blobs. Auto-update pipeline live.
+
+**What's working in production:**
+- Six providers tracked (3 local-file, 3 admin-API)
+- Buy flow: Stripe Payment Link → /thank-you.html → Edge Function streams DMG from Netlify Blobs
+- Recovery flow: /recover page takes email → edge function finds Stripe session → Resend emails download link via Gmail-forwarded support@trytokenly.app
+- Auto-update: every installed Tokenly ≥ 1.2.1 polls `https://github.com/tokenlyapp/tokenly/releases/download/latest-mac.yml` every 4h, downloads silently, prompts to install
+- Menu-bar live token display with per-provider source selector + period toggle
+
+**Infrastructure addresses:**
+- GitHub: `tokenlyapp/tokenly` (public)
+- Website: Netlify, domain `trytokenly.app`
+- Support email: `support@trytokenly.app` (forwarded via ImprovMX to `tokenlyapp@gmail.com`, replies via Gmail Send-As)
+- Email sender: Resend, `downloads@trytokenly.app` or `support@trytokenly.app` (domain verified)
+- Stripe: live mode, Payment Link at `https://buy.stripe.com/...`
+
+**Resolved investigations:**
+- Antigravity: confirmed not locally parseable (cloud-only state sync). Closed.
+- Cursor: declined on scope (opaque sqlite blobs, client-side billing data unreliable). Closed.
+
+**Next unshipped Tier 1 items:**
+- Budget alerts + daily spend notifications
+- Product Hunt + Hacker News launch
+- $5.99 lifetime Pro tier paywall (free = Claude Code + Codex CLI + Gemini CLI; paid = APIs + budget alerts + export). Existing $1.99 buyers grandfathered.
+
+**Shipped since last handoff:**
+- Live pricing refresh — `https://trytokenly.app/pricing.json` fetched on launch + every 24h, disk-cached, with bundled fallback. Tray menu → "Refresh Pricing Tables" for manual refresh.
 
 ---
 
@@ -13,10 +45,12 @@ This document is the complete build record as of the first public release. Read 
 | **Name** | Tokenly |
 | **Domain** | [trytokenly.app](https://trytokenly.app) |
 | **Tagline** | Live monitor for AI spend |
-| **Price** | $1.99 one-time |
+| **Price** | $1.99 one-time, lifetime updates |
 | **Target platform** | macOS 13+ (universal: Apple Silicon + Intel) |
 | **App bundle ID** | `app.tokenly.desktop` |
+| **GitHub** | `tokenlyapp/tokenly` (public) |
 | **Primary category** | Developer Tools |
+| **Apple Team ID** | `8D73RDFBU4` (Austin Downey) |
 
 **Positioning statement:** *"Every token and dollar your AI tools consumed — live, in your menu bar, with keys that never leave your Mac."*
 
@@ -140,13 +174,23 @@ LLM Usage Dash/
 
 ### Provider-specific fetchers
 
-| Provider | Source | Shape | Notes |
-|---|---|---|---|
-| **Claude Code** | Streams `~/.claude/projects/**/*.jsonl` line-by-line via `readline` | Each line is a JSON event; we keep only `type: "assistant"` with `message.usage` | Dedups by `message.id`. Filters by `timestamp` to window. Pre-filters files by `mtime`. **Streaming required** — conversation files can exceed V8's string limit. |
-| **Codex** | Streams `~/.codex/sessions/**/*.jsonl` and `~/.codex/archived_sessions/*.jsonl` | Tracks `currentModel` from `turn_context` events; reads `event_msg.payload.type === "token_count"` for `last_token_usage` | Dedups by `session_meta.payload.id`. **The `logs_2.sqlite` was a dead end** — it's an OTel buffer that only captures ~1% of real usage. Rollout JSONL is the source of truth. |
-| **OpenAI API** | `GET /v1/organization/usage/completions` + `/v1/organization/costs` | Paginated (max 31 buckets/page); totals from `/costs` grouped by `line_item` | Requires **Admin API key** (sk-admin-…). Regular project keys 403. Costs in **dollars** as `amount.value` string. |
-| **Anthropic API** | `GET /v1/organizations/usage_report/messages` + `/cost_report` | Paginated; amounts returned as plain strings on `amount` (not nested .value) | Requires **Admin Key** (sk-ant-admin…). **Amount is in CENTS**, not dollars — must divide by 100. This was the second-biggest bug we caught. |
-| **OpenRouter** | `GET /api/v1/activity` | Per-day, per-model rows with `usage` (USD), `prompt_tokens`, `completion_tokens`, `reasoning_tokens` | Requires **Management key** (not a regular API key). Data aggregates by completed UTC day — today's usage appears tomorrow. |
+Sources are grouped into **Local tools** (read from disk, capture subscription-bundled usage) and **API billing** (read from provider admin endpoints, capture pay-as-you-go charges). The Settings dropdown groups them visually.
+
+**Local tools (keyless, real-time):**
+
+| Provider | Display Name | Source | Shape | Notes |
+|---|---|---|---|---|
+| `claude-code` | **Claude Code** | Streams `~/.claude/projects/**/*.jsonl` via `readline` | Each line is a JSON event; keep only `type: "assistant"` with `message.usage` | Covers both **Claude Code CLI and Claude Desktop app** (shared folder). Dedups by `message.id`. **Streaming required** — conversation files can exceed V8's string limit. |
+| `codex` | **Codex CLI** | Streams `~/.codex/sessions/**/*.jsonl` and `archived_sessions/` | Tracks `currentModel` from `turn_context` events; reads `event_msg.payload.type === "token_count"` for `last_token_usage` | Covers both **Codex CLI and Codex Desktop** (both write to `sessions/`). Dedups by `session_meta.payload.id`. **The `logs_2.sqlite` was a dead end** — OTel buffer captures only ~1% of real usage. Rollout JSONL is the source of truth. Also exposes `rate_limits` block → feeds the "5h window / 7d / team" quota strip on the card. |
+| `gemini-cli` | **Gemini CLI** | Reads `~/.gemini/tmp/<project_hash>/chats/*.json` | Each file is one session; `messages[]` contains turns with `type: "gemini"` having a clean `tokens: { input, output, cached, thoughts, tool, total }` block | Only Gemini CLI — no Gemini Desktop tool persists locally. Cleanest per-turn schema of any provider. `thoughts` = reasoning tokens (priced as output). `tool` = tool-call context (priced as input). Dedups by `msg.id`. |
+
+**API billing (keyed, polls every 30–60s):**
+
+| Provider | Display Name | Source | Shape | Notes |
+|---|---|---|---|---|
+| `openai` | **OpenAI API** | `GET /v1/organization/usage/completions` + `/v1/organization/costs` | Paginated (max 31 buckets/page); totals from `/costs` grouped by `line_item` | Requires **Admin API key** (`sk-admin-…`). Regular project keys 403. Costs in **dollars** as `amount.value` string. |
+| `anthropic` | **Anthropic API** | `GET /v1/organizations/usage_report/messages` + `/cost_report` | Paginated; amounts returned as plain strings on `amount` (not nested `.value`) | Requires **Admin Key** (`sk-ant-admin…`). **Amount is in CENTS**, not dollars — must divide by 100. |
+| `openrouter` | **OpenRouter** | `GET /api/v1/activity` + `GET /api/v1/credits` | Activity: per-day, per-model rows with `usage` (USD), `prompt_tokens`, `completion_tokens`, `reasoning_tokens`. Credits: `total_credits` - `total_usage` = remaining balance. | Requires **Management key** (not a regular API key). Activity aggregates by completed UTC day. The `/credits` call surfaces remaining balance in the green "⚡ Balance $X of $Y" strip on the card. |
 
 ### Local-source cost calculation
 
@@ -387,6 +431,20 @@ These live in `main.js` and must be updated when providers announce price change
 
 ### Current (April 2026)
 
+**Gemini (`GEMINI_PRICING`)** — per million tokens, standard tier:
+| Model family | Input | Output |
+|---|---|---|
+| Gemini 3 Pro | $2.00 | $12.00 |
+| Gemini 3 Flash | $0.30 | $2.50 |
+| Gemini 3 Flash Lite | $0.10 | $0.40 |
+| Gemini 2.5 Pro | $1.25 | $10.00 |
+| Gemini 2.5 Flash | $0.30 | $2.50 |
+| Gemini 2.0 Flash | $0.15 | $0.60 |
+| Gemini 1.5 Pro | $1.25 | $5.00 |
+| Gemini 1.5 Flash | $0.075 | $0.30 |
+
+Cache: `cached` priced at **0.25× input** (Google's cache-read rate). `thoughts` (reasoning) priced as output. `tool` tokens priced as input.
+
 **Claude (`CLAUDE_PRICING`)** — per million tokens, standard tier:
 | Model family | Input | Output |
 |---|---|---|
@@ -419,10 +477,16 @@ These live in `main.js` and must be updated when providers announce price change
 
 ### When a provider changes pricing
 
-1. Update the relevant `*_PRICING` table in `main.js`
-2. Bump app version: `npm version patch`
-3. Rebuild + re-upload blob (see shipping section)
-4. Users who refresh after update pick up new prices automatically — **historical windows re-compute at the new prices on every refresh**, so prior days re-price themselves. That's intentional; it means the list-price estimate always reflects *current* list prices, which is the most useful baseline for subscription-ROI decisions.
+Since 1.4.0, the authoritative pricing table is `https://trytokenly.app/pricing.json` — no app rebuild required.
+
+1. Edit `pricing.json` in `~/Downloads/tokenly-netlify/`. Bump `updated_at`.
+2. (Recommended) mirror the change into the bundled `*_PRICING` arrays in `main.js` so new installs have correct rates offline.
+3. `netlify deploy --prod` from `~/Downloads/tokenly-netlify/`.
+4. Users pick up the change on their next 24h refresh, or immediately via tray menu → "Refresh Pricing Tables".
+
+**Historical windows re-compute at the new prices on every refresh**, so prior days re-price themselves. That's intentional; it means the list-price estimate always reflects *current* list prices, which is the most useful baseline for subscription-ROI decisions.
+
+See OPERATIONS.md § "Pricing table updates" for the full procedure.
 
 ### Cache / reasoning multipliers (rarely change)
 
@@ -451,6 +515,12 @@ These live in `main.js` and must be updated when providers announce price change
 | Blob upload stored the path as a string | `netlify blobs:set` without `--input` treats arg as value | Always pass `--input <path>` for binary files |
 | Site app preview blank after security header update | `X-Frame-Options: DENY` blocks all iframes, including own | Change to `SAMEORIGIN` |
 | Popover blurs-and-hides immediately at launch | Launching from Terminal focuses Terminal; popover loses focus | Debounce blur handler — ignore events <250ms after toggle |
+| Tray token total didn't match card 24h total | (1) Counted `cache_creation` which the card excludes; (2) counted `cached` on top of `input_tokens` for OpenAI/OpenRouter/Codex where cached is already a subset of input | Unified to card's exact formula: `input + output + cache_read + cached` — tray and card now agree for same-source comparisons |
+| Recovery function never emailed | Two problems discovered via `[recover]` log: (a) `charges/search?query=billing_details.email` returned HTTP 400 because that field is not indexed for search; (b) Stripe Payment Links guest-checkouts don't create Customer records so `customers/search?email=` also failed | Primary method now lists checkout_sessions and filters client-side on `customer_details.email` — works for guest checkouts. Falls back to charges.search with `receipt_email` as the searchable field. |
+| Users who bought pre-1.2.1 can't auto-update | 1.2.0 DMG was shipped before `electron-updater` was wired | One-time re-download via `/recover` or email them the link. After they install ≥1.2.1, auto-update works forever. |
+| DMG corrupted after Stripe checkout | Netlify Lambda Functions cap response bodies at 6 MB; the 184 MB DMG was truncated mid-stream | Moved download handler from `netlify/functions/` to `netlify/edge-functions/` — edge functions support unlimited streaming responses |
+| `netlify blobs:set` stored the path instead of file contents | CLI interprets the third positional arg as a literal string value | Always use `--input <path>` flag for binary files |
+| Antigravity probe dead end | Spent ~2h confirming it's not parseable. `chat.ChatSessionStore.index` stays empty even during active use. `antigravityUnifiedStateSync.*` markers indicate all state is server-side. Closed as not-viable. | Documented in § 9 "Intentional non-features" so nobody retries the same investigation |
 
 ---
 
@@ -470,15 +540,106 @@ Listed here so they don't sneak back in as requests.
 
 ---
 
+## 9.5. Auto-update infrastructure (shipped in 1.2.1)
+
+Every Tokenly install ≥ 1.2.1 silently checks GitHub for new releases and prompts to install.
+
+**Pieces:**
+- `electron-updater` npm dep, imported in `main.js`
+- `publish: [{ provider: "github", owner: "tokenlyapp", repo: "tokenly" }]` in `package.json` build config
+- GitHub Personal Access Token (classic, `repo` scope) stored as `GH_TOKEN` in `.env.local`
+- Every release creates a **GitHub Release** with `Tokenly-X.Y.Z-universal.dmg`, `Tokenly-X.Y.Z-universal-mac.zip`, and `latest-mac.yml`
+
+**How it works at runtime:**
+1. On app-ready, `setupAutoUpdater()` schedules a check 5s after launch, then every 4 hours
+2. `autoUpdater` fetches `latest-mac.yml` from the GitHub Release feed
+3. If `version > app.getVersion()`, downloads the `.zip` in the background (silent)
+4. When download completes, a native macOS dialog prompts **"Install & Relaunch / Later"**
+5. User accepts → `autoUpdater.quitAndInstall()` → app quits, unpacks zip, replaces `Tokenly.app`, relaunches
+6. **Keychain ACL survives** because the new binary has the same code signature (Developer ID Austin Downey `8D73RDFBU4`) — no re-prompt for saved API keys
+
+**Tray menu** has a manual "Check for Updates…" entry for on-demand checks.
+
+**Critical: every release needs TWO uploads:**
+1. `npm run dist:publish` — builds, signs, notarizes, uploads to GitHub Releases (for existing-customer auto-update)
+2. `netlify blobs:set downloads Tokenly.dmg --input dist/Tokenly-X.Y.Z-universal.dmg` — replaces the blob that Stripe-checkout serves (for new-customer purchases)
+
+Forgetting either leaves one audience stuck. See OPERATIONS.md for the checklist.
+
+---
+
+## 9.6. Menu-bar live tokens (shipped in 1.3.0)
+
+The tray icon can display a live token count next to it. Two-axis control:
+
+- **Source**: `all providers` | any single provider (e.g. `claude-code`, `openai`)
+- **Period**: `off` | `today` | `window` | `hybrid`
+
+**Mechanism:**
+- Renderer's `computeTrayTitle(mode, source, usage)` in `App.jsx` aggregates from `usage` state
+- IPC channel `tray:set-title` → `tray.setTitle()` on main process
+- Debounced 250ms, fires on every state change of `{ trayMode, traySource, usage }`
+
+**Match rules (critical for matching card displays):**
+- `window` mode uses the **same formula** as the card's right-side token label: `input + output + cache_read + cached`. Matches exactly when a single source is selected.
+- `today` mode uses `trend[trend.length - 1]` for each provider — the last UTC-calendar-day bucket. Will not exactly match card's 24h total (rolling vs. calendar), documented in tooltip.
+- When source ≠ `all`, a 2-char tag prefixes the number: `CC 12.4M`, `AI 45K`, etc.
+
+**Dropdown UX (shipped 1.3.0):**
+- Native HTML `<optgroup>` separates **Local tools (subscription-bundled)** from **API billing (pay-as-you-go)** — instant comprehension of what each row represents
+- Period buttons show dynamic range label: "Last 7d" / "Last 30d" / "Last 180d" matching popover state
+
+---
+
+## 9.7. Download recovery flow (shipped)
+
+For buyers who lose the thank-you page download link, `/recover` on the website lets them request a fresh link by email.
+
+**Architecture:**
+```
+user → /recover.html form → POST /api/recover
+                                   ↓
+                Netlify Edge Function (recover.mjs):
+                  1. Parse email
+                  2. List Stripe checkout_sessions (up to 500 most recent)
+                  3. Filter by customer_details.email match + payment_status=paid
+                  4. Fallback: search charges by receipt_email
+                  5. If match → Resend API → email branded HTML with 
+                     https://trytokenly.app/thank-you.html?session_id=...
+                                   ↓
+                          Generic success response
+                          (prevents email enumeration)
+```
+
+**Env vars required:**
+- `STRIPE_SECRET_KEY` — for session lookups (must match test/live mode)
+- `RESEND_API_KEY` — for transactional send
+- `RESEND_FROM` — `Tokenly <support@trytokenly.app>` (domain verified in Resend)
+
+**The /api/download ledger:**
+- 365-day re-download window per session_id (originally 72h, extended after no real abuse seen)
+- Stored in Netlify Blobs `redemptions` store
+- After 365d: HTTP 410, user must contact support
+
+**Email deliverability:**
+- ImprovMX forwards `*@trytokenly.app` → `tokenlyapp@gmail.com`
+- Gmail "Send mail as" configured so replies go out from `support@trytokenly.app` via ImprovMX's SMTP
+- Recovery email template includes the real Tokenly logo at `https://trytokenly.app/site-assets/icon-email.png` (128×128 PNG, not SVG — Gmail/Outlook strip SVG)
+
+---
+
 ## 10. Key credentials & where they live
 
 | Credential | Location | Used by |
 |---|---|---|
-| Apple Developer ID cert | macOS Keychain (installed via Xcode → Settings → Accounts) | `electron-builder` (auto-discovered) |
+| Apple Developer ID cert | macOS Keychain (installed via Xcode → Settings → Accounts). Identity: `Austin Downey (8D73RDFBU4)` | `electron-builder` (auto-discovered during `npm run dist:publish`) |
 | `APPLE_ID` | `.env.local` in app repo (gitignored) | Notarization |
 | `APPLE_APP_SPECIFIC_PASSWORD` | `.env.local` in app repo | Notarization |
 | `APPLE_TEAM_ID` | `.env.local` in app repo | Notarization |
-| `STRIPE_SECRET_KEY` | Netlify env vars (set via `netlify env:set`) | Edge Function session verification |
+| `GH_TOKEN` | `.env.local` in app repo | electron-builder publishes to GitHub Releases (PAT with `repo` scope) |
+| `STRIPE_SECRET_KEY` | Netlify env vars (`netlify env:set`) | Edge Functions (`download.mjs`, `recover.mjs`) |
+| `RESEND_API_KEY` | Netlify env vars | Recovery email (`recover.mjs`) |
+| `RESEND_FROM` | Netlify env vars — `Tokenly <support@trytokenly.app>` | Recovery email FROM header |
 | User's provider API keys | macOS Keychain via `safeStorage`, encrypted as `~/Library/Application Support/Tokenly/keys.enc` | App runtime |
 
 **Never commit any of the above to git.** `.gitignore` already covers `.env`, `.env.local`, and `dist/`.

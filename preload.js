@@ -11,4 +11,7 @@ contextBridge.exposeInMainWorld('api', {
   mode: () => (typeof location !== 'undefined' && location.hash === '#desktop' ? 'desktop' : 'popover'),
   revealDiagnostic: () => ipcRenderer.invoke('diagnostic:reveal'),
   setTrayTitle: (title) => ipcRenderer.invoke('tray:set-title', title),
+  getPricingTables: () => ipcRenderer.invoke('pricing:get-tables'),
+  refreshPricing: () => ipcRenderer.invoke('pricing:refresh'),
+  onOpenPricing: (cb) => ipcRenderer.on('open-pricing', cb),
 });

@@ -6,6 +6,7 @@ function LLMUsageApp() {
   const isPopover = mode === 'popover';
   const [expanded, setExpanded] = useStateA({ 'claude-code': true, 'codex': true, 'gemini-cli': true, openai: true, anthropic: true, openrouter: false });
   const [sheetOpen, setSheetOpen] = useStateA(false);
+  const [pricingOpen, setPricingOpen] = useStateA(false);
   const [spinning, setSpinning] = useStateA(false);
   const [days, setDays] = useStateA(() => {
     try { return parseInt(localStorage.getItem('windowDays') || '30', 10) || 30; } catch { return 30; }
@@ -130,6 +131,7 @@ function LLMUsageApp() {
 
   useEffectA(() => {
     if (window.api?.onRefreshNow) window.api.onRefreshNow(() => refreshAll());
+    if (window.api?.onOpenPricing) window.api.onOpenPricing(() => setPricingOpen(true));
   }, [refreshAll]);
 
   // Keep the menu-bar title synced with aggregated tokens whenever usage, mode,
@@ -315,6 +317,11 @@ function LLMUsageApp() {
         traySource={traySource}
         onTraySourceChange={updateTraySource}
         currentDays={days}
+        onOpenPricing={() => { setSheetOpen(false); setPricingOpen(true); }}
+      />
+      <PricingSheet
+        open={pricingOpen}
+        onClose={() => setPricingOpen(false)}
       />
     </div>
     </BadgeStyleContext.Provider>
