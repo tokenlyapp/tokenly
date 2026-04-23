@@ -272,6 +272,7 @@ app.whenReady().then(() => {
   startGeminiWatcher();
   setupAutoUpdater();
   setupPricingRefresh();
+  setupLicenseReverify();
   // Default to popover mode on launch (no dock clutter) unless user had detached.
   const prefersDesktop = (() => {
     try {
@@ -663,6 +664,48 @@ ipcMain.handle('license:deactivate', () => {
   try { if (fs.existsSync(licensePath())) fs.unlinkSync(licensePath()); } catch {}
   return { ok: true, tier: 'free' };
 });
+
+// Background re-verify. Fires 20s after launch (give the app time to settle)
+// and every 24h thereafter. Downgrades the app to Free if Stripe reports the
+// session as refunded/invalid. Network errors are silently ignored so a
+// paying user isn't locked out by a flaky wifi moment.
+async function backgroundVerifyLicense() {
+  const lic = loadLicense();
+  if (!lic || !lic.session_id) return;
+  try {
+    const res = await fetch(LICENSE_VERIFY_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': `Tokenly/${app.getVersion()}`,
+      },
+      body: JSON.stringify({ session_id: lic.session_id }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = await res.json().catch(() => ({}));
+    const REVOKE_REASONS = new Set(['refunded', 'not_paid', 'invalid_session', 'invalid_format']);
+    if (body && body.ok && body.tier === 'max') {
+      saveLicense({ ...lic, last_verified_at: Date.now() });
+      return;
+    }
+    if (body && body.ok === false && REVOKE_REASONS.has(body.reason)) {
+      console.log('[license] revoked by re-verify:', body.reason);
+      try { if (fs.existsSync(licensePath())) fs.unlinkSync(licensePath()); } catch {}
+      for (const w of BrowserWindow.getAllWindows()) {
+        try { w.webContents.send('license-changed', { tier: 'free', license: null, reason: body.reason }); } catch {}
+      }
+    }
+    // Everything else (server_misconfigured, http_5xx, etc.) — no-op. Trust
+    // the cached license until the server can give a definitive revoke.
+  } catch (err) {
+    // Network / timeout / abort — no-op.
+  }
+}
+
+function setupLicenseReverify() {
+  setTimeout(() => backgroundVerifyLicense().catch(() => {}), 20_000);
+  setInterval(() => backgroundVerifyLicense().catch(() => {}), 24 * 60 * 60 * 1000);
+}
 
 async function fetchUsage(provider, key, days) {
   const now = Math.floor(Date.now() / 1000);

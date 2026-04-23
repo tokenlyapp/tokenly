@@ -148,6 +148,12 @@ function LLMUsageApp() {
         if (res) setLicenseState(res);
       } catch {}
     })();
+    // Listen for background-reverify downgrades (refund detection).
+    if (window.api?.onLicenseChanged) {
+      window.api.onLicenseChanged((state) => {
+        if (state) setLicenseState(state);
+      });
+    }
   }, []);
 
   // ---- Budget alerts (API-only daily $ thresholds) ----------------------

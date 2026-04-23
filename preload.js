@@ -21,4 +21,5 @@ contextBridge.exposeInMainWorld('api', {
   getLicense: () => ipcRenderer.invoke('license:get'),
   activateLicense: (code) => ipcRenderer.invoke('license:activate', code),
   deactivateLicense: () => ipcRenderer.invoke('license:deactivate'),
+  onLicenseChanged: (cb) => ipcRenderer.on('license-changed', (_e, state) => cb(state)),
 });
