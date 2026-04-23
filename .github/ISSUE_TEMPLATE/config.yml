@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Email support (activation issues, refunds, general help)
+    url: mailto:support@trytokenly.app
+    about: For activation codes, refunds, or anything account-related. Usually answered within a day.
+  - name: Security vulnerability
+    url: mailto:support@trytokenly.app?subject=SECURITY%3A%20
+    about: Found something that affects user security? Email us privately instead of opening a public issue. Prefix the subject with SECURITY.
+  - name: Read the docs first
+    url: https://trytokenly.app/faq
+    about: Common questions — "Does it send my keys anywhere?", "Why is my Claude Code total different from the web?", etc.

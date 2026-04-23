@@ -1,0 +1,107 @@
+name: Bug report
+description: Something in Tokenly is broken or showing wrong data.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. A complete report gets fixed faster — please fill out every field.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you file
+      options:
+        - label: I've searched [existing issues](https://github.com/tokenlyapp/tokenly/issues?q=is%3Aissue) and this isn't a duplicate.
+          required: true
+        - label: I'm on the latest version (Tokenly menu → **Check for Updates…**).
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Tokenly version
+      description: Find it in **Settings → About**, or check the DMG filename.
+      placeholder: e.g. 1.8.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: macos
+    attributes:
+      label: macOS version
+      options:
+        - "macOS 15 (Sequoia)"
+        - "macOS 14 (Sonoma)"
+        - "macOS 13 (Ventura)"
+        - "Older (Tokenly requires 13+)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: chip
+    attributes:
+      label: Mac chip
+      options:
+        - "Apple Silicon (M1/M2/M3/M4)"
+        - "Intel"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Which provider card is affected?
+      description: If the bug isn't tied to a specific card, pick "App-wide / other."
+      options:
+        - "Claude Code"
+        - "Codex CLI"
+        - "Gemini CLI"
+        - "OpenAI API"
+        - "Anthropic API"
+        - "OpenRouter API"
+        - "Menu bar / tray"
+        - "Settings / pricing sheet"
+        - "Budget alerts"
+        - "Auto-update"
+        - "App-wide / other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug — what you saw vs. what you expected.
+      placeholder: |
+        The Claude Code card shows $0.00 but I've been using Claude Code all day.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shorter and more specific, the faster we can fix it.
+      placeholder: |
+        1. Open Tokenly
+        2. Click Claude Code card
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or console output
+      description: |
+        Drop a screenshot if visual. For numerical bugs, open **Settings → Advanced → Export debug log** and paste the relevant section here.
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy note
+      options:
+        - label: I've reviewed my pasted logs and removed any API keys or personal file paths.
+          required: true

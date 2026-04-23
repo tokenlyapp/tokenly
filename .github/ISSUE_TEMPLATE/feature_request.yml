@@ -1,0 +1,51 @@
+name: Feature request
+description: Suggest a new capability, provider, or workflow for Tokenly.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Tokenly's roadmap is deliberately narrow — see `ROADMAP.md` in the repo for what's already queued. Requests that duplicate existing roadmap items get closed but linked.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you file
+      options:
+        - label: I've skimmed the [open issues](https://github.com/tokenlyapp/tokenly/issues?q=is%3Aissue) and [ROADMAP.md](https://github.com/tokenlyapp/tokenly/blob/main/ROADMAP.md) — this isn't already there.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the use case before the solution. ("I pay for X and want Y" > "Add feature Z.")
+      placeholder: |
+        I run three separate LLM workstreams and want to see per-project cost rollups, not just per-provider.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would the feature look like?
+      description: UI, behavior, flow — whatever you can describe. Screenshots of other tools are welcome.
+
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Which tier would this belong to?
+      description: Honest answer — power-user features belong in Max; zero-setup features belong in Free.
+      options:
+        - "Free (zero-setup, no keys)"
+        - "Tokenly Max (paid, keys required)"
+        - "Either / not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you've tried
+      description: What do you do today to solve this? Helps us understand how urgent it is.
