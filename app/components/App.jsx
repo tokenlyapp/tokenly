@@ -97,6 +97,9 @@ function LLMUsageApp() {
       if (myVersion !== refreshVersionRef.current) return;
       await Promise.all(PROVIDERS.map(async (p) => {
         if (!m[p.id]?.present) return;
+        // Non-keyless (API) providers are Max-only. Skip fetching them
+        // entirely on Free to avoid wasted API calls + stale data.
+        if (!isPro && !p.keyless) return;
         const res = await window.api.fetchUsage(p.id, days);
         if (myVersion !== refreshVersionRef.current) return; // stale — user switched ranges
         setUsage((prev) => {
@@ -112,7 +115,7 @@ function LLMUsageApp() {
         setLastRefreshedAt(Date.now());
       }
     }
-  }, [days, refreshMeta]);
+  }, [days, refreshMeta, isPro]);
 
   useEffectA(() => { refreshAll(); }, [refreshAll]);
 
@@ -155,6 +158,28 @@ function LLMUsageApp() {
       });
     }
   }, []);
+
+  // When the tier flips Max → Free, wipe any cached API-provider usage so the
+  // main popover doesn't show stale numbers behind the Max-locked overlay.
+  useEffectA(() => {
+    if (isPro) return;
+    setUsage((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const p of PROVIDERS) {
+        if (!p.keyless && next[p.id] !== undefined) {
+          delete next[p.id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    // If the menu-bar tokens source was an API provider, snap back to 'all'.
+    const sourceProv = PROVIDERS.find((p) => p.id === traySource);
+    if (sourceProv && !sourceProv.keyless) {
+      updateTraySource('all');
+    }
+  }, [isPro]);
 
   // ---- Budget alerts (API-only daily $ thresholds) ----------------------
   // Runs on every successful refresh. Candidate alerts are sent to main,
@@ -276,11 +301,11 @@ function LLMUsageApp() {
   useEffectA(() => {
     if (!window.api?.setTrayTitle) return;
     const handle = setTimeout(() => {
-      const title = computeTrayTitle(trayMode, traySource, usage, days);
+      const title = computeTrayTitle(trayMode, traySource, usage, days, isPro);
       window.api.setTrayTitle(title);
     }, 250);
     return () => clearTimeout(handle);
-  }, [trayMode, traySource, usage, days]);
+  }, [trayMode, traySource, usage, days, isPro]);
 
   const keysPresent = Object.values(meta).some((m) => m?.present);
   const isFirstRun = booted && !keysPresent;
@@ -526,11 +551,18 @@ window.LLMUsageApp = LLMUsageApp;
 //               Uses totals with the SAME formula as the card's rightSide
 //               label (input + output + cache_read + cached), so the tray
 //               and card agree exactly when the same source is selected.
-function computeTrayTitle(mode, source, usage, days) {
+function computeTrayTitle(mode, source, usage, days, isPro) {
   if (!mode || mode === 'off') return '';
 
+  // Free users: API providers are Max-locked, so never roll their numbers
+  // into the tray title. If the current source is an API provider, blank
+  // the title — the state should have been snapped to 'all' elsewhere but
+  // this is a belt-and-suspenders guard.
+  const sourceProv = PROVIDERS.find((p) => p.id === source);
+  if (!isPro && sourceProv && !sourceProv.keyless) return '';
+
   const providerList = (source === 'all')
-    ? PROVIDERS
+    ? (isPro ? PROVIDERS : PROVIDERS.filter((p) => p.keyless))
     : PROVIDERS.filter((p) => p.id === source);
 
   // Match the card's rightSide formula exactly.

@@ -95,6 +95,58 @@ function SettingsSheet({
           </div>
         </div>
 
+        {/* Tokenly Max — always visible so Max users can always reach the
+            activation sheet to view or remove their code. Free users get
+            an upgrade CTA here too, right alongside the locked entries
+            below. */}
+        {onOpenLicense && (
+          <button
+            onClick={onOpenLicense}
+            style={{
+              width: '100%', textAlign: 'left',
+              background: isPro
+                ? 'linear-gradient(135deg, rgba(232,164,65,0.10), rgba(124,92,255,0.05))'
+                : t.card,
+              border: isPro
+                ? '1px solid rgba(232,164,65,0.35)'
+                : `1px solid ${t.cardBorder}`,
+              borderRadius: 10, padding: '10px 12px', marginBottom: 12,
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+              cursor: 'pointer', fontFamily: 'inherit', color: t.text,
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                Tokenly Max
+                {isPro && (
+                  <span style={{
+                    fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
+                    padding: '2px 6px', borderRadius: 4, textTransform: 'uppercase',
+                    color: '#1a1408', lineHeight: 1,
+                    background: 'linear-gradient(135deg, #ffd772, #e8a441)',
+                    border: '1px solid rgba(232,164,65,0.55)',
+                  }}>Max</span>
+                )}
+              </div>
+              <div style={{ fontSize: 10, color: t.textMute, marginTop: 2, lineHeight: 1.45 }}>
+                {isPro
+                  ? 'Active on this Mac. View your activation code or remove it here.'
+                  : 'Unlock the APIs + budget alerts for $5.99 lifetime.'}
+              </div>
+            </div>
+            {isPro ? (
+              <span style={{ color: t.textDim, flexShrink: 0, fontSize: 14 }}>→</span>
+            ) : (
+              <span style={{
+                fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+                color: t.accent, background: 'rgba(124,92,255,0.12)',
+                border: '1px solid rgba(124,92,255,0.3)',
+                padding: '3px 7px', borderRadius: 5, flexShrink: 0, whiteSpace: 'nowrap',
+              }}>Unlock Max</span>
+            )}
+          </button>
+        )}
+
         {/* Menu bar tokens — dual control: which source, which period */}
         <div style={{
           background: t.card, border: `1px solid ${t.cardBorder}`,
@@ -123,17 +175,19 @@ function SettingsSheet({
                 fontFamily: 'inherit', outline: 'none',
               }}
             >
-              <option value="all">All providers</option>
+              <option value="all">{isPro ? 'All providers' : 'All (local tools)'}</option>
               <optgroup label="Local tools (subscription-bundled)">
                 {PROVIDERS.filter((p) => p.keyless).map((p) => (
                   <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
               </optgroup>
-              <optgroup label="API billing (pay-as-you-go)">
-                {PROVIDERS.filter((p) => !p.keyless).map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </optgroup>
+              {isPro && (
+                <optgroup label="API billing (pay-as-you-go)">
+                  {PROVIDERS.filter((p) => !p.keyless).map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
 

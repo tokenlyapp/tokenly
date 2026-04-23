@@ -384,6 +384,22 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
   };
 
   const rightSide = () => {
+    // Max-locked providers never show spend/token numbers in the header —
+    // whatever data was left in state from a prior Max session should stay
+    // hidden until the user reactivates.
+    if (lockedForFree) {
+      return (
+        <>
+          <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: 5, color: t.textMute, fontSize: 10.5, fontWeight: 500, whiteSpace: 'nowrap' }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="4" y="11" width="16" height="10" rx="2" />
+              <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+            </svg>
+            Max required
+          </div>
+        </>
+      );
+    }
     if (!data || !data.present) return <StatusDot status="idle" />;
     if (data.status === 'loading') {
       const isEstimate = !!(PROVIDER_COST_INFO[provider.id] && PROVIDER_COST_INFO[provider.id].emphasis);
@@ -493,8 +509,9 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
         marginBottom: 10,
         // Don't clip — tooltips on the header need to escape the card bounds.
         backdropFilter: 'blur(20px)',
-        transition: 'border-color .2s',
+        transition: 'border-color .2s, opacity .2s',
         position: 'relative',
+        opacity: lockedForFree ? 0.82 : 1,
       }}
     >
       <div

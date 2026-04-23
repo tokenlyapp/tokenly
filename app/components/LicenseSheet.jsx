@@ -63,6 +63,13 @@ function LicenseSheet({ open, onClose, onBack, tier, license, onLicenseChange, o
 
   const remove = async () => {
     if (busy) return;
+    const confirmed = window.confirm(
+      'Remove your Tokenly Max activation code?\n\n' +
+      'Heads-up — you paid a one-time fee for lifetime access. Your code still works forever and every future update is already yours, so there\'s nothing to re-buy if you change your mind.\n\n' +
+      'If you ever lose your code, you can retrieve it anytime at trytokenly.app/recover.\n\n' +
+      'Still want to remove it on this Mac?'
+    );
+    if (!confirmed) return;
     setBusy(true); setError(null);
     try {
       await window.api.deactivateLicense();
