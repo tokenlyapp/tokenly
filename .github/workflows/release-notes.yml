@@ -1,0 +1,63 @@
+name: Auto-write release notes
+
+# Fires whenever a GitHub Release is published (including the ones
+# electron-builder creates on `npm run dist:publish`). Also usable manually
+# from the Actions tab via workflow_dispatch — handy for regenerating notes
+# on any past tag.
+#
+# Flow: release appears → this workflow runs → scripts/generate-release-notes.mjs
+# collects the commit log + diff since the previous tag → asks Claude Sonnet
+# to write structured notes matching Tokenly's voice → `gh release edit`
+# replaces the default electron-builder body with the authored version.
+#
+# Required repo secret: ANTHROPIC_API_KEY
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to (re)generate notes for (e.g. v1.7.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-notes-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            echo "::error::no tag resolved"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          # Full history is required so the script can diff against the
+          # previous tag.
+          fetch-depth: 0
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate notes via Claude
+        env:
+          RELEASE_TAG:       ${{ steps.tag.outputs.tag }}
+          REPO:              ${{ github.repository }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN:          ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/generate-release-notes.mjs
