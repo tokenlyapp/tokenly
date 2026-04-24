@@ -18,7 +18,28 @@ Every token and dollar your AI tools consume, across six providers, surfaced in 
 
 <br />
 
-<img src="./assets/demo.gif" alt="Tokenly demo — click the tray icon and see your AI spend across six providers" width="720" />
+<table align="center">
+  <tr>
+    <td align="center" width="50%">
+      <img src="./assets/dashboard.png" alt="Tokenly dashboard — live per-provider token counts, daily chart, and cost estimate for Claude Code and Codex CLI" width="360" />
+      <br /><sub><b>Live dashboard</b> — real-time spend across every provider</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./assets/pricing.png" alt="Tokenly pricing view — per-million-token list prices for every Anthropic and OpenAI model, auto-refreshed daily" width="360" />
+      <br /><sub><b>Current pricing</b> — auto-refreshed list prices per model</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./assets/settings.png" alt="Tokenly settings — icon appearance, menu-bar token display, pricing, API keys, and budget alerts" width="360" />
+      <br /><sub><b>Settings</b> — menu-bar display, budgets, and appearance</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./assets/keys.png" alt="Tokenly API Keys — OpenAI, Anthropic, and OpenRouter admin keys saved in the macOS Keychain" width="360" />
+      <br /><sub><b>API keys</b> — encrypted in the macOS Keychain, never leave your Mac</sub>
+    </td>
+  </tr>
+</table>
 
 </div>
 
