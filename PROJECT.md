@@ -8,7 +8,7 @@ This document is the complete build record. Read it before making architectural 
 
 ## 0. Current state (session handoff)
 
-**Current shipped version:** `1.3.0` — on GitHub Releases + Netlify Blobs. Auto-update pipeline live.
+**Current shipped version:** `1.8.1` — on GitHub Releases + Netlify Blobs. Auto-update pipeline live.
 
 **What's working in production:**
 - Six providers tracked (3 local-file, 3 admin-API)
@@ -30,9 +30,9 @@ This document is the complete build record. Read it before making architectural 
 
 **Next unshipped Tier 1 items:**
 - Product Hunt + Hacker News launch
-- $5.99 lifetime Pro tier paywall (free = Claude Code + Codex CLI + Gemini CLI; paid = APIs + budget alerts + export). Existing $1.99 buyers grandfathered.
 
 **Shipped since last handoff:**
+- **Tokenly Max paywall** — shipped across 1.6.0 (initial paywall + branding + sheet UX), 1.8.0 (always-visible license field + daily re-verify), 1.8.1 (Max always-accessible in Settings + locked UI when Free). Free = Claude Code + Codex CLI + Gemini CLI (local, no keys). Max = $5.99 one-time, lifetime updates. Unlocks OpenAI / Anthropic / OpenRouter admin billing + budget alerts + CSV export. Enforced via a local license-key check calling `trytokenly.app/api/license-verify`. Stripe webhook auto-emails activation code via Resend.
 - Live pricing refresh — `https://trytokenly.app/pricing.json` fetched on launch + every 24h, disk-cached, with bundled fallback. Tray menu → "View Pricing…" opens the sheet.
 - **Pricing sheet** — read-only per-model rates UI. Settings → "View current pricing →". Shows source (remote/bundled), effective date, multiplier chips, two-column rate tables.
 - **Budget alerts v1** — daily $ thresholds for API providers only. 50/80/100% native notifications, once per UTC day per threshold. Daily spend summary at user-chosen hour. Persisted to `budgets.json`; dedupe ledger at `alerts.json`. v2 = monthly + token-based thresholds for local tools.
@@ -47,7 +47,7 @@ This document is the complete build record. Read it before making architectural 
 | **Name** | Tokenly |
 | **Domain** | [trytokenly.app](https://trytokenly.app) |
 | **Tagline** | Live monitor for AI spend |
-| **Price** | $1.99 one-time, lifetime updates |
+| **Price** | Free · **Tokenly Max** $5.99 one-time, lifetime updates |
 | **Target platform** | macOS 13+ (universal: Apple Silicon + Intel) |
 | **App bundle ID** | `app.tokenly.desktop` |
 | **GitHub** | `tokenlyapp/tokenly` (public) |
@@ -278,7 +278,7 @@ tokenly-netlify/
 ### Landing-page flow
 
 1. **Nav** — sticky, blurs on scroll. Logo → `Tokenly` → Features / FAQ / Buy
-2. **Hero** — the centerpiece. Headline with violet→cyan gradient, badge copy *"NEW · v1.0"*, Buy button ($1.99), "See how it works" link, four trust badges
+2. **Hero** — the centerpiece. Headline with violet→cyan gradient, two-CTA split ("Download free" → /download, "Get Max $5.99" → Stripe Payment Link), "See how it works" link, four trust badges
 3. **Showcase** — `MenuBarFrame` wraps an `<iframe src="app-mock.html">` that renders the real ProviderCard tree against stubbed data. Changes to the actual app JSX propagate by re-copying `app-components/`.
 4. **Features** — 2×2 grid on tablet+, stacked on mobile. Four cards: Zero setup · Freshness · Honesty · Security
 5. **Providers strip** — logos + what-we-read line per provider
@@ -309,7 +309,7 @@ tokenly-netlify/
 ### The flow
 
 ```
-User clicks "Buy $1.99" → STRIPE_CHECKOUT_URL (set in components/App.jsx)
+User clicks "Get Max $5.99" → STRIPE_CHECKOUT_URL (set in components/App.jsx)
     ↓
 Stripe Checkout (hosted by Stripe — no code on our end)
     ↓
@@ -414,13 +414,15 @@ netlify deploy --prod
 
 ### The complete Stripe → live setup (one-time)
 
-1. Stripe Dashboard → Products → Add product → $1.99 one-time
-2. Create Payment Link. After-payment settings: *Don't show confirmation page → Redirect to URL*. URL: `https://trytokenly.app/thank-you.html?session_id={CHECKOUT_SESSION_ID}`
+1. Stripe Dashboard → Products → Add product → **Tokenly Max** $5.99 one-time
+2. Create Payment Link. After-payment settings: *Don't show confirmation page → Redirect to URL*. URL: `https://trytokenly.app/thank-you.html?session_id={CHECKOUT_SESSION_ID}`. Enable "Collect customer email."
 3. Copy the `https://buy.stripe.com/...` URL
-4. Open `components/App.jsx`. Replace `STRIPE_CHECKOUT_URL = 'https://buy.stripe.com/REPLACE_ME'` with the real URL
+4. Open `components/App.jsx` and set `const STRIPE_CHECKOUT_URL = 'https://buy.stripe.com/...'`. The value is also referenced from `components/Nav.jsx` and `components/MaxPage.jsx` — update all three locations.
 5. `netlify env:set STRIPE_SECRET_KEY "sk_live_..."`
-6. `netlify deploy --prod`
-7. Test one purchase end-to-end with a real card (refund immediately from Stripe Dashboard)
+6. Add a webhook in Stripe Dashboard → Developers → Webhooks pointing at `https://trytokenly.app/api/stripe-webhook`, subscribed to `checkout.session.completed`. Copy the signing secret and `netlify env:set STRIPE_WEBHOOK_SECRET "whsec_..."`
+7. `netlify env:set RESEND_API_KEY "re_..."` (activation emails)
+8. `netlify deploy --prod`
+9. Test one purchase end-to-end with a real card (refund immediately from Stripe Dashboard). Verify the activation email arrives and the license-verify endpoint returns `active: true` for the returned code.
 
 ---
 

@@ -1,6 +1,6 @@
 # Tokenly — Product Roadmap
 
-Prioritized by **impact × feasibility**. Current shipped version is **1.3.0**.
+Prioritized by **impact × feasibility**. Current shipped version is **1.8.1**.
 
 Tiers:
 - **Tier 1** — ship within 2 weeks. Compounds fast.
@@ -87,10 +87,9 @@ Third keyless card. Reads `~/.gemini/tmp/<project_hash>/chats/*.json`, parses pe
 **Effort:** 6h.
 **What it looks like:** Expanded Claude Code card gets a "By project" tab. Shows cost per directory name.
 
-### 2.4. Pro tier with paywalled features
-**Impact:** 9/10 (for revenue). First $2K MRR comes from this split.
-**Effort:** 12h.
-**What it looks like:** Tokenly Free — Claude Code + Codex cards only (the zero-setup flow). Tokenly Pro ($4/mo or $39/yr) — unlocks OpenAI/Anthropic/OpenRouter cards, CSV export, budget alerts, compare ranges. Enforce via a local license-key check that calls a thin Cloudflare Worker.
+### 2.4. Tokenly Max paywall — SHIPPED across 1.6.0 / 1.8.0 / 1.8.1
+**Impact:** 9/10 (for revenue). First $2K ARR comes from this split.
+**Shipped actuals:** Tokenly Free — Claude Code + Codex CLI + Gemini CLI cards (the zero-setup flow). Tokenly Max — **$5.99 one-time, lifetime updates** — unlocks OpenAI / Anthropic / OpenRouter admin billing cards, budget alerts, CSV export, menu-bar tag for API sources. Enforced via a local license-key check against a Netlify Edge Function (`/api/license-verify`); Stripe webhook auto-emails the activation code via Resend. Pricing landed at $5.99 one-time rather than the originally-planned $4/mo or $39/yr — simpler story, stronger HN narrative, and matches indie-Mac-app norms.
 
 ### 2.5. Settings → customize pricing
 **Impact:** 6/10. Enterprise customers often have negotiated discounts. Letting them plug their real per-M-token rates in makes the estimate match their actual invoice.
@@ -168,7 +167,7 @@ Third keyless card. Reads `~/.gemini/tmp/<project_hash>/chats/*.json`, parses pe
 
 ## Explicitly not shipping
 
-- **No Antigravity integration.** Probed exhaustively April 2026. Antigravity is cloud-first by design — `chat.ChatSessionStore.index` stays empty even after active agent sessions, no `*token*` / `*gemini*` keys exist in any local sqlite, the one suspicious 4.7MB blob turned out to be VS Code's localization cache, and `antigravityUnifiedStateSync.*` in storage.json confirms agent state syncs to Google's servers. The only path to their usage data would be an enterprise-OAuth'd Google Cloud Billing flow — not viable in a $1.99 indie app. Revisit only if Google publishes a public consumer usage API.
+- **No Antigravity integration.** Probed exhaustively April 2026. Antigravity is cloud-first by design — `chat.ChatSessionStore.index` stays empty even after active agent sessions, no `*token*` / `*gemini*` keys exist in any local sqlite, the one suspicious 4.7MB blob turned out to be VS Code's localization cache, and `antigravityUnifiedStateSync.*` in storage.json confirms agent state syncs to Google's servers. The only path to their usage data would be an enterprise-OAuth'd Google Cloud Billing flow — not viable in a solo indie app. Revisit only if Google publishes a public consumer usage API.
 - **No Cursor integration.** Cursor's sqlite grows to 25GB+ and stores conversations as opaque JSON blobs without clean per-turn token fields. Their own dashboard at cursor.com/settings is the authoritative billing view — no public API. Revisit if Cursor ships an official usage API.
 - **No telemetry or analytics.** Positioning moat. Don't even consider sentry/posthog/heap/etc.
 - **No ChatGPT / Claude.ai session cookie scraping.** ToS-violating, fragile, gets rejected from both MAS and Setapp.
@@ -185,12 +184,12 @@ Third keyless card. Reads `~/.gemini/tmp/<project_hash>/chats/*.json`, parses pe
 **Why Tier 1 first:**
 - Auto-update (1.1) must ship before Product Hunt (1.6) — otherwise forever-stuck v1 users
 - Live pricing (1.2) + menubar total (1.3) are the two highest-frequency-use features — they're what users notice every day
-- Budget alerts (1.4) drives retention (user comes back to check) and opens the door for a Pro tier
+- Budget alerts (1.4) drives retention (user comes back to check) and opened the door for Tokenly Max monetization
 - Gemini (1.5) unlocks a new audience segment without cannibalizing existing
 
 **Why Tier 2 after:**
 - All Tier 2 items assume a steady flow of users — no point shipping compare-ranges (2.2) until enough users have 60 days of data
-- Pro tier (2.4) requires enough value-adds (2.1–2.3 especially) to justify the upgrade
+- Tokenly Max (2.4, shipped) established the paywall boundary; 2.1–2.3 are the value-adds that make the $5.99 upgrade compelling as the product matures
 
 **Why Tier 3 is patient:**
 - Team mode (3.1) is a completely different product shape; don't start until solo-user product is stable
@@ -206,11 +205,11 @@ Third keyless card. Reads `~/.gemini/tmp/<project_hash>/chats/*.json`, parses pe
 | Installs | 500 | 2,500 |
 | Paying users (ARR) | $1K | $10K |
 | D7 retention | 40% | 55% |
-| Pro tier conversion | 5% | 12% |
+| Tokenly Max conversion | 5% | 12% |
 | App Store rating (when MAS ships) | 4.6+ | 4.7+ |
 | Support tickets per 100 users / week | <5 | <2 |
 | Time-to-first-value (download → first card populated) | <60s | <30s |
 
 If D7 retention is below 30% at month 3, something is structurally wrong (probably data quality — consider Tier 2.5 pricing overrides ASAP).
 
-If Pro conversion is below 3%, the paywall split is wrong — expand free tier.
+If Max conversion is below 3%, the paywall split is wrong — expand the free tier.
