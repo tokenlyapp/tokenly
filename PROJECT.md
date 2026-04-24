@@ -31,7 +31,7 @@ This document is the complete build record. Read it before making architectural 
 - Cursor: declined on scope (opaque sqlite blobs, client-side billing data unreliable). Closed.
 
 **Shipped since last handoff (1.9.0):**
-- **Analytics view** (Max-only) — new full-screen sheet reached from a gold chart icon in the popover header. KPI tiles, stacked-area cost/tokens over time, stacked-bar tokens-by-category, top-models horizontal bar, and a 30-day linear-regression projection with past/future split. Cost / Tokens tab toggle flips every chart's metric. Full-name provider filter chips. Range picker mirrors the popover's window selector.
+- **Analytics view** (Max-only) — new full-screen sheet reached from a gold chart icon in the popover header. KPI tiles, stacked-area token-value / token-volume over time, stacked-bar tokens-by-category, top-models horizontal bar, and a 30-day linear-regression projection with past/future split. Token value / Tokens tab toggle flips every chart's metric. Full-name provider filter chips. Range picker mirrors the popover's window selector.
 - **CSV / JSON export** (Max-only) — new Export sheet under Settings with a live preview. Three datasets: Daily trend, Provider totals, Model breakdown. Format toggle (CSV / JSON). Copy to clipboard or Save to file via native dialog.
 - **Per-chart + bundle PNG export** — gold download button on every Analytics chart renders that card in an isolated hidden BrowserWindow (measured content size, `document.fonts.ready`, 2× retina) and returns a PNG via `webContents.capturePage`. Bundle export dumps all charts into a user-chosen folder.
 - **PDF analytics report** — renders a polished multi-page dark-themed report (hero cover with gold-gradient headline + Max chip, numbered chart sections, native Chromium header/footer with page numbers) via Electron's `printToPDF`. No new deps.
@@ -197,7 +197,7 @@ Sources are grouped into **Local tools** (read from disk, capture subscription-b
 | `anthropic` | **Anthropic API** | `GET /v1/organizations/usage_report/messages` + `/cost_report` | Paginated; amounts returned as plain strings on `amount` (not nested `.value`) | Requires **Admin Key** (`sk-ant-admin…`). **Amount is in CENTS**, not dollars — must divide by 100. |
 | `openrouter` | **OpenRouter** | `GET /api/v1/activity` + `GET /api/v1/credits` | Activity: per-day, per-model rows with `usage` (USD), `prompt_tokens`, `completion_tokens`, `reasoning_tokens`. Credits: `total_credits` - `total_usage` = remaining balance. | Requires **Management key** (not a regular API key). Activity aggregates by completed UTC day. The `/credits` call surfaces remaining balance in the green "⚡ Balance $X of $Y" strip on the card. |
 
-### Local-source cost calculation
+### Local-source token-value calculation
 
 Tokens come free from local logs, but dollar amounts require multiplication against published pricing. Tables live in `main.js`:
 

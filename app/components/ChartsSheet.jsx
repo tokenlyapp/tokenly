@@ -271,6 +271,16 @@ function ChartsSheet({ open, onClose, onBack, usage = {}, days = 30, onDaysChang
   const unitPerDay  = isTokens ? '/d' : '/d';
   const topModel    = models[0] || null;
 
+  // The $ mode labels dollar values as "Token value" across the board —
+  // for local sources it's a list-price estimate of what those tokens would
+  // cost at API rates; for admin-API sources it's the same number their
+  // invoice reports. One name covers both so the UI stays consistent.
+  // (In Tokens mode these labels aren't used — we say "tokens" throughout.)
+  const hasApiSelected = activeProviders.some((p) => !p.keyless);
+  const costNounTitle  = 'Token value';   // Chart headings
+  const costNounLower  = 'token value';   // Inline sentences / KPI sublabels
+  const topByLabel     = 'token value';   // KPI "Top model by …"
+
   // ---- Render --------------------------------------------------------------
   return (
     <React.Fragment>
@@ -450,8 +460,8 @@ function ChartsSheet({ open, onClose, onBack, usage = {}, days = 30, onDaysChang
             borderRadius: 9, padding: 2, gap: 1,
           }}>
             {[
-              { v: 'cost',   label: '$ Cost',  sub: 'USD spend' },
-              { v: 'tokens', label: 'Tokens',  sub: 'Token volume' },
+              { v: 'cost',   label: 'Token value $',  sub: 'USD value of every token in the selected window' },
+              { v: 'tokens', label: 'Tokens',         sub: 'Raw token counts' },
             ].map((opt) => {
               const active = mode === opt.v;
               return (
@@ -516,13 +526,13 @@ function ChartsSheet({ open, onClose, onBack, usage = {}, days = 30, onDaysChang
           {/* KPI tiles — 2x2 grid; metric swaps with the Cost/Tokens toggle */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <KPI
-              label={`${rangeLabelShort(days)} ${isTokens ? 'tokens' : 'spend'}`}
+              label={`${rangeLabelShort(days)} ${isTokens ? 'tokens' : costNounLower}`}
               value={fmtValue(total)}
               t={t}
               tint={t.accent}
             />
             <KPI
-              label={`Avg daily ${isTokens ? 'tokens' : 'spend'}`}
+              label={`Avg daily ${isTokens ? 'tokens' : costNounLower}`}
               value={fmtValue(avgDaily)}
               hint={`over ${Math.min(days, seriesByDay.filter((d) => d.total > 0).length || 1)} active days`}
               t={t}
@@ -536,7 +546,7 @@ function ChartsSheet({ open, onClose, onBack, usage = {}, days = 30, onDaysChang
               tint={t.green}
             />
             <KPI
-              label={`Top model by ${isTokens ? 'tokens' : 'spend'}`}
+              label={`Top model by ${isTokens ? 'tokens' : topByLabel}`}
               value={topModel ? shortModel(topModel.model) : '—'}
               hint={topModel
                 ? (isTokens
@@ -551,7 +561,7 @@ function ChartsSheet({ open, onClose, onBack, usage = {}, days = 30, onDaysChang
           {/* Chart 1 — Over time, stacked by provider (cost OR tokens) */}
           <ChartCard
             t={t}
-            title={isTokens ? 'Tokens over time' : 'Cost over time'}
+            title={isTokens ? 'Tokens over time' : `${costNounTitle} over time`}
             subtitle={`Per day, stacked by provider · past ${days}d`}
             legend={activeProviders.map((p) => {
               const [a, b] = TOKENS.color.providers[p.id];
@@ -590,7 +600,7 @@ function ChartsSheet({ open, onClose, onBack, usage = {}, days = 30, onDaysChang
           {/* Chart 3 — Projection (cost OR tokens) */}
           <ChartCard
             t={t}
-            title={isTokens ? 'Token projection' : 'Spend projection'}
+            title={isTokens ? 'Token projection' : `${costNounTitle} projection`}
             subtitle={`Linear fit on trailing ${REGRESSION_WINDOW}d · forecast next ${PROJECTION_DAYS}d`}
             onExport={doExportCard}
             exporting={exporting}
@@ -608,7 +618,7 @@ function ChartsSheet({ open, onClose, onBack, usage = {}, days = 30, onDaysChang
           {/* Chart 4 — Top models */}
           <ChartCard
             t={t}
-            title={isTokens ? 'Top models by tokens' : 'Top models by spend'}
+            title={isTokens ? 'Top models by tokens' : `Top models by ${topByLabel}`}
             subtitle="Ranked across all selected providers"
             onExport={doExportCard}
             exporting={exporting}
@@ -1391,8 +1401,8 @@ function buildPdfHtml(rootEl, { mode, days, rangeLabel, generatedAt }) {
       </section>`;
   }).join('');
 
-  const headerLabel = mode === 'tokens' ? 'Token volume' : 'USD spend';
-  const heroMetric  = mode === 'tokens' ? 'Tokens' : '$ Cost';
+  const headerLabel = mode === 'tokens' ? 'Token volume' : 'Token value (USD)';
+  const heroMetric  = mode === 'tokens' ? 'Tokens' : 'Token value';
 
   return `<!doctype html>
 <html>

@@ -284,7 +284,7 @@ function LLMUsageApp() {
         }
 
         const title = totalApi > 0
-          ? `Today's AI spend: $${totalApi.toFixed(2)}`
+          ? `Today's API spend: $${totalApi.toFixed(2)}`
           : `Today's AI usage`;
         const body = parts.length > 0 ? parts.join(' · ') : 'No usage recorded today yet.';
         await window.api.maybeFireDailySummary({ title, body });
@@ -689,7 +689,7 @@ function FirstRunEmpty({ onOpenSettings }) {
         ))}
       </div>
       <div style={{ fontSize: 14, fontWeight: 600, marginTop: 8, letterSpacing: '-0.01em' }}>
-        Track spend across four models, in one window.
+        Every token and every dollar, across every model, in one window.
       </div>
       <div style={{ fontSize: 11.5, color: t.textDim, lineHeight: 1.5, maxWidth: 280 }}>
         Add an Admin API key for each provider you use. Keys are stored in the macOS keychain and never leave this machine.

@@ -21,7 +21,7 @@ Every token and dollar your AI tools consume, across six providers, surfaced in 
 <table align="center">
   <tr>
     <td align="center" width="50%">
-      <img src="./assets/dashboard.png" alt="Tokenly dashboard — live per-provider token counts, daily chart, and cost estimate for Claude Code and Codex CLI" width="360" />
+      <img src="./assets/dashboard.png" alt="Tokenly dashboard — live per-provider token counts, daily chart, and token-value estimate for Claude Code and Codex CLI" width="360" />
       <br /><sub><b>Live dashboard</b> — real-time spend across every provider</sub>
     </td>
     <td align="center" width="50%">
@@ -151,12 +151,12 @@ That's it. No signup, no configuration, no telemetry. If you want to unlock API-
 
 ### Analytics view *(Tokenly Max)*
 
-- **KPI tiles** — total spend or tokens in the current window, daily average, 30-day projection with trend arrow, top model.
-- **Cost / Tokens tab toggle** — flip every chart between dollar and token metrics with one click.
+- **KPI tiles** — total token value or tokens in the current window, daily average, 30-day projection with trend arrow, top model.
+- **Token value / Tokens tab toggle** — flip every chart between token-value dollars and raw token counts with one click.
 - **Stacked-area over time** — per-day totals stacked by provider, with an average reference line and a peak-day callout.
 - **Tokens by category** — stacked bars per day (input / output / cache read / cache write / reasoning / tool) with a live summary strip.
-- **Spend projection** — linear regression over the trailing window projects the next 30 days, with past-vs-forecast pace comparison.
-- **Top models** — ranked horizontal bars showing cost, tokens, and requests per model across the selected providers.
+- **Token-value projection** — linear regression over the trailing window projects the next 30 days, with past-vs-forecast pace comparison.
+- **Top models** — ranked horizontal bars showing token value, tokens, and requests per model across the selected providers.
 - **PDF + PNG export** — export the whole view as a polished multi-page PDF report, or each chart as its own retina PNG (individual or bundle).
 
 ### Data export *(Tokenly Max)*

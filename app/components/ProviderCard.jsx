@@ -175,6 +175,10 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
       );
     }
 
+    // Local (subscription-bundled) sources show `$` as a list-price *value*,
+    // not real spend. The expanded footer label honors that.
+    const isEstimate = !!(PROVIDER_COST_INFO[provider.id] && PROVIDER_COST_INFO[provider.id].emphasis);
+
     const miniStats = provider.id === 'anthropic'
       ? [
           ['Input', fmt(data.totals.input)],
@@ -376,7 +380,7 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
           marginTop: 8, paddingTop: 6, borderTop: `1px solid ${t.cardBorder}`,
           fontSize: 9.5, color: t.textMute, display: 'flex', justifyContent: 'space-between',
         }}>
-          <span>Accrued spend · UTC window</span>
+          <span>{isEstimate ? 'Token value $ · UTC window' : 'Accrued spend · UTC window'}</span>
           <span>Last {data.windowDays || '—'}d</span>
         </div>
       </div>
@@ -456,7 +460,7 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
     // For API cards: dollars are the primary number, "actual spend" is the tiny caption.
     const primary = isEstimate ? fmt(tokens) + ' tok' : fmtMoney(data.totals.cost);
     const secondary = isEstimate
-      ? { text: '≈ ' + fmtMoney(data.totals.cost) + ' est.', color: TOKENS.color.amber }
+      ? { text: 'token value ' + fmtMoney(data.totals.cost), color: TOKENS.color.amber }
       : { text: 'actual spend · ' + fmt(tokens) + ' tok', color: t.textDim };
 
     return (
