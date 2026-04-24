@@ -15,8 +15,6 @@ Before filing:
 
 Use the [feature request template](https://github.com/tokenlyapp/tokenly/issues/new/choose). Describe the problem first, the proposed solution second — this keeps us focused on the underlying need rather than a specific implementation.
 
-Skim [`ROADMAP.md`](ROADMAP.md) first. Requests already on the roadmap get closed-but-linked.
-
 ## Pull requests
 
 Small, focused PRs are welcome:

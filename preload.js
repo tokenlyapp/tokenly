@@ -22,4 +22,10 @@ contextBridge.exposeInMainWorld('api', {
   activateLicense: (code) => ipcRenderer.invoke('license:activate', code),
   deactivateLicense: () => ipcRenderer.invoke('license:deactivate'),
   onLicenseChanged: (cb) => ipcRenderer.on('license-changed', (_e, state) => cb(state)),
+  saveExportFile: (payload) => ipcRenderer.invoke('export:save-file', payload),
+  exportChartsPdf: (payload) => ipcRenderer.invoke('export:charts-pdf', payload),
+  saveBinaryFile: (payload) => ipcRenderer.invoke('export:save-binary', payload),
+  saveBundle: (payload) => ipcRenderer.invoke('export:save-bundle', payload),
+  captureRegion: (rect) => ipcRenderer.invoke('export:capture-region', rect),
+  captureHtml: (payload) => ipcRenderer.invoke('export:capture-html', payload),
 });

@@ -8,7 +8,7 @@ This document is the complete build record. Read it before making architectural 
 
 ## 0. Current state (session handoff)
 
-**Current shipped version:** `1.8.1` — on GitHub Releases + Netlify Blobs. Auto-update pipeline live.
+**Current shipped version:** `1.9.0` — on GitHub Releases + Netlify Blobs. Auto-update pipeline live.
 
 **What's working in production:**
 - Six providers tracked (3 local-file, 3 admin-API)
@@ -16,6 +16,8 @@ This document is the complete build record. Read it before making architectural 
 - Recovery flow: /recover page takes email → edge function finds Stripe session → Resend emails download link via Gmail-forwarded support@trytokenly.app
 - Auto-update: every installed Tokenly ≥ 1.2.1 polls `https://github.com/tokenlyapp/tokenly/releases/download/latest-mac.yml` every 4h, downloads silently, prompts to install
 - Menu-bar live token display with per-provider source selector + period toggle
+- Analytics view with KPIs, stacked-area / stacked-bar / projection charts, and per-chart PDF + PNG export
+- CSV / JSON export of the current window — daily trend, provider totals, or per-model breakdown
 
 **Infrastructure addresses:**
 - GitHub: `tokenlyapp/tokenly` (public)
@@ -28,39 +30,37 @@ This document is the complete build record. Read it before making architectural 
 - Antigravity: confirmed not locally parseable (cloud-only state sync). Closed.
 - Cursor: declined on scope (opaque sqlite blobs, client-side billing data unreliable). Closed.
 
-**Next unshipped Tier 1 items:**
-- Product Hunt + Hacker News launch
+**Shipped since last handoff (1.9.0):**
+- **Analytics view** (Max-only) — new full-screen sheet reached from a gold chart icon in the popover header. KPI tiles, stacked-area cost/tokens over time, stacked-bar tokens-by-category, top-models horizontal bar, and a 30-day linear-regression projection with past/future split. Cost / Tokens tab toggle flips every chart's metric. Full-name provider filter chips. Range picker mirrors the popover's window selector.
+- **CSV / JSON export** (Max-only) — new Export sheet under Settings with a live preview. Three datasets: Daily trend, Provider totals, Model breakdown. Format toggle (CSV / JSON). Copy to clipboard or Save to file via native dialog.
+- **Per-chart + bundle PNG export** — gold download button on every Analytics chart renders that card in an isolated hidden BrowserWindow (measured content size, `document.fonts.ready`, 2× retina) and returns a PNG via `webContents.capturePage`. Bundle export dumps all charts into a user-chosen folder.
+- **PDF analytics report** — renders a polished multi-page dark-themed report (hero cover with gold-gradient headline + Max chip, numbered chart sections, native Chromium header/footer with page numbers) via Electron's `printToPDF`. No new deps.
+- **`dailyBreakdown`** added to every provider fetcher — per-day {input, output, cache_read, cache_creation, cached, reasoning, tool, requests, cost} object array. Drives both the Daily trend CSV/JSON export and the tokens-by-category chart.
+- **Gold "Max" treatment** — unlocked Max entries in Settings get a gold gradient border + gem glyph + Max chip. Max-only sheets (API Keys, Budget Alerts, Export, Analytics) get a gold top border + soft gold glow. Analytics icon in the popover header wraps in a gold container when Max is active.
+- **Docs** — `ROADMAP.md` removed (was internal strategy). `PROJECT.md`, `README.md`, `CONTRIBUTING.md` scrubbed of business-plan framing so the repo reads as a product, not a pitch deck.
 
-**Shipped since last handoff:**
-- **Tokenly Max paywall** — shipped across 1.6.0 (initial paywall + branding + sheet UX), 1.8.0 (always-visible license field + daily re-verify), 1.8.1 (Max always-accessible in Settings + locked UI when Free). Free = Claude Code + Codex CLI + Gemini CLI (local, no keys). Max = $5.99 one-time, lifetime updates. Unlocks OpenAI / Anthropic / OpenRouter admin billing + budget alerts + CSV export. Enforced via a local license-key check calling `trytokenly.app/api/license-verify`. Stripe webhook auto-emails activation code via Resend.
-- Live pricing refresh — `https://trytokenly.app/pricing.json` fetched on launch + every 24h, disk-cached, with bundled fallback. Tray menu → "View Pricing…" opens the sheet.
-- **Pricing sheet** — read-only per-model rates UI. Settings → "View current pricing →". Shows source (remote/bundled), effective date, multiplier chips, two-column rate tables.
-- **Budget alerts v1** — daily $ thresholds for API providers only. 50/80/100% native notifications, once per UTC day per threshold. Daily spend summary at user-chosen hour. Persisted to `budgets.json`; dedupe ledger at `alerts.json`. v2 = monthly + token-based thresholds for local tools.
-- **costTrend** added to every API fetcher (per-day $ bucket array) — powers budget evaluation, will also power compare-ranges (§2.2).
+**Shipped in earlier releases (recap):**
+- **Tokenly Max tier** — 1.6.0 (initial UI + branding), 1.8.0 (always-visible license field + daily re-verify), 1.8.1 (Max always-accessible in Settings + locked UI when Free). Free = Claude Code + Codex CLI + Gemini CLI. Max = $5.99 one-time, lifetime updates. Enforced via a local license-key check calling `trytokenly.app/api/license-verify`. Stripe webhook auto-emails the activation code via Resend.
+- **Live pricing refresh** — `https://trytokenly.app/pricing.json` fetched on launch + every 24h, disk-cached, with bundled fallback. Tray menu → "View Pricing…" opens the sheet.
+- **Pricing sheet** — read-only per-model rates UI. Settings → "View current pricing →".
+- **Budget alerts** — daily $ thresholds for API providers only. 50/80/100% native notifications, once per UTC day per threshold. Daily spend summary at user-chosen hour.
+- **costTrend** on every API fetcher — powers budget evaluation and Analytics charts.
 
 ---
 
-## 1. Brand & positioning
+## 1. Project basics
 
 | | |
 |---|---|
 | **Name** | Tokenly |
-| **Domain** | [trytokenly.app](https://trytokenly.app) |
 | **Tagline** | Live monitor for AI spend |
-| **Price** | Free · **Tokenly Max** $5.99 one-time, lifetime updates |
-| **Target platform** | macOS 13+ (universal: Apple Silicon + Intel) |
+| **Platform** | macOS 13+ (universal: Apple Silicon + Intel) |
 | **App bundle ID** | `app.tokenly.desktop` |
-| **GitHub** | `tokenlyapp/tokenly` (public) |
-| **Primary category** | Developer Tools |
-| **Apple Team ID** | `8D73RDFBU4` (Austin Downey) |
+| **Category** | Developer Tools |
 
-**Positioning statement:** *"Every token and dollar your AI tools consumed — live, in your menu bar, with keys that never leave your Mac."*
-
-Two distinct audiences:
-1. **Solo devs on Claude Max / ChatGPT Team** — want to see subscription ROI via list-price tokens/dollars
-2. **Startups with OpenAI/Anthropic Admin keys** — want to see authoritative API spend
-
-Tokenly serves both by clearly labeling each card as either *"list-price estimate"* (amber, tokens-first) or *"actual billed spend"* (green, dollars-first).
+Cards fall into two display modes depending on the source:
+- **List-price estimate** (amber, tokens-first) — local tools where usage is subscription-bundled, so we show tokens + what the same usage would cost at published per-million rates.
+- **Actual billed spend** (green, dollars-first) — admin-API providers where the dollars are real invoice figures.
 
 ---
 
@@ -120,7 +120,13 @@ LLM Usage Dash/
 │   ├── tokens.js               # Design tokens (colors per provider, type scale, radii)
 │   ├── atoms.jsx               # ProviderBadge, InfoTip, icons, PROVIDERS list, format helpers
 │   ├── ProviderCard.jsx        # The collapsible card for each provider
-│   ├── SettingsSheet.jsx       # Bottom-sheet with API key inputs
+│   ├── SettingsSheet.jsx       # Settings sheet — preferences, routes to the Max sheets
+│   ├── ApiKeysSheet.jsx        # Max-only API key management
+│   ├── BudgetsSheet.jsx        # Max-only daily budget + alert thresholds
+│   ├── ExportSheet.jsx         # Max-only CSV / JSON export with live preview
+│   ├── ChartsSheet.jsx         # Max-only Analytics view — charts, projections, PDF + PNG export
+│   ├── LicenseSheet.jsx        # Tokenly Max activation / management
+│   ├── PricingSheet.jsx        # Read-only per-model rates UI
 │   └── App.jsx                 # Root component — tray orchestration, refresh loop, state
 └── assets/
     ├── anthropic.svg openai.svg codex.svg openrouter.svg  # Brand logos (SVG)
@@ -533,9 +539,8 @@ Listed here so they don't sneak back in as requests.
 - **No account system.** No login, no server-side profile, no sync across devices.
 - **No per-session OAuth to consumer ChatGPT / Claude.ai.** Scraping web session cookies is against both providers' ToS and breaks on every UI redesign.
 - **No "rate alerts" email/SMS.** Would require a backend; first version is purely client-side.
-- **No CSV export in v1.** See ROADMAP.md for when.
-- **No Mac App Store version in v1.** Requires app sandbox rework. Direct DMG distribution is faster, fully controlled, and higher-margin.
-- **No Windows or Linux builds.** Electron supports both but the entire source material (Claude Code, Codex, tray idioms) is macOS-centric for v1.
+- **No Mac App Store version.** Requires app sandbox rework. Direct DMG distribution is simpler to ship and fully controlled.
+- **No Windows or Linux builds.** Electron supports both but the entire source material (Claude Code, Codex, tray idioms) is macOS-centric.
 
 ---
 

@@ -5,7 +5,7 @@ name: Sync README
 # Fires when any "truth source" file is merged to main:
 #   - Electron main process + renderer components
 #   - package.json (version + deps)
-#   - PROJECT.md (architecture), ROADMAP.md (shipped features)
+#   - PROJECT.md (architecture + shipped features)
 #   - scripts/ (build, release, sync tooling)
 #
 # Also runs on every GitHub Release publish (so a new tag always reconciles
@@ -28,7 +28,6 @@ on:
       - 'assets/**'
       - 'package.json'
       - 'PROJECT.md'
-      - 'ROADMAP.md'
       - 'scripts/**'
       - '.github/workflows/readme-sync.yml'
   release:

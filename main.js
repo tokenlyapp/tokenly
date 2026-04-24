@@ -408,6 +408,216 @@ ipcMain.handle('usage:fetch', async (_e, provider, rangeDays) => {
 
 ipcMain.handle('open-external', (_e, url) => shell.openExternal(url));
 
+// Render an HTML string to a PDF via a hidden BrowserWindow + printToPDF,
+// then prompt for a save location. Used by the Analytics "Export report"
+// button for the flagship PDF report. Zero new deps — Chromium does the
+// rendering, Electron's native printToPDF gives publication-quality output.
+ipcMain.handle('export:charts-pdf', async (e, { html, suggestedName } = {}) => {
+  let win;
+  try {
+    const parent = BrowserWindow.fromWebContents(e.sender) || BrowserWindow.getFocusedWindow();
+    // Ask first so we don't render a PDF the user is about to throw away.
+    const defaultPath = path.join(app.getPath('downloads'), suggestedName || 'tokenly-report.pdf');
+    const saveRes = await dialog.showSaveDialog(parent, {
+      title: 'Export Tokenly analytics report',
+      defaultPath,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (saveRes.canceled || !saveRes.filePath) return { ok: false, canceled: true };
+
+    win = new BrowserWindow({
+      show: false,
+      width: 816,   // Letter @ 96dpi: 8.5 * 96
+      height: 1056, // Letter @ 96dpi: 11 * 96
+      webPreferences: { offscreen: false, sandbox: true, contextIsolation: true },
+    });
+
+    // data: URL avoids writing to a temp file. Chromium handles large URLs fine.
+    const dataUrl = 'data:text/html;charset=utf-8;base64,' + Buffer.from(String(html ?? ''), 'utf8').toString('base64');
+    await win.loadURL(dataUrl);
+
+    // Give the renderer a tick to paint SVGs / fonts before capturing.
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Page header + footer via Chromium's displayHeaderFooter. CSS
+    // classes like .pageNumber/.totalPages/.date/.title are substituted
+    // at print time — no extra JS needed.
+    const headerTemplate = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 8px; color: #8a8c99; padding: 0 12mm; width: 100%; display: flex; justify-content: space-between; align-items: center;">
+        <span style="display: inline-flex; align-items: center; gap: 6px;">
+          <span style="width: 8px; height: 8px; border-radius: 2px; background: linear-gradient(135deg,#ffd772,#e8a441);"></span>
+          <b style="color:#ecedf3;">Tokenly</b>
+          <span>Analytics Report</span>
+        </span>
+        <span class="date" style="color:#5d6070;"></span>
+      </div>`;
+    const footerTemplate = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 8px; color: #5d6070; padding: 0 12mm; width: 100%; display: flex; justify-content: space-between;">
+        <span>tokenly.app · local data, never leaves your Mac</span>
+        <span>Page <span class="pageNumber"></span> / <span class="totalPages"></span></span>
+      </div>`;
+    const pdfBuf = await win.webContents.printToPDF({
+      pageSize: 'Letter',
+      printBackground: true,
+      displayHeaderFooter: true,
+      headerTemplate,
+      footerTemplate,
+      margins: { top: 0.5, right: 0.4, bottom: 0.5, left: 0.4 },
+      landscape: false,
+    });
+    fs.writeFileSync(saveRes.filePath, pdfBuf);
+    return { ok: true, path: saveRes.filePath };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  } finally {
+    if (win && !win.isDestroyed()) win.destroy();
+  }
+});
+
+// Render an HTML snippet in an isolated hidden BrowserWindow and capture it
+// as PNG bytes. The window opens tall (we don't know final content height
+// up front), then we measure the actual rendered bounds and resize + capture
+// to fit. Prevents bottom cutoff when the isolated render re-flows slightly
+// differently than the live DOM.
+ipcMain.handle('export:capture-html', async (_e, { html, width = 900, height = 500 } = {}) => {
+  let win;
+  try {
+    // Create with a generous initial height; real size comes from the page.
+    win = new BrowserWindow({
+      show: false,
+      width,
+      height: Math.max(height, 1200),
+      webPreferences: { offscreen: false, sandbox: true, contextIsolation: true },
+      backgroundColor: '#0d0d14',
+      useContentSize: true,
+    });
+    const dataUrl = 'data:text/html;charset=utf-8;base64,' + Buffer.from(String(html ?? ''), 'utf8').toString('base64');
+    await win.loadURL(dataUrl);
+
+    // Wait for fonts + two rAFs so layout is fully committed before measuring.
+    // Measure the wrapper frame directly — do NOT fall back to
+    // documentElement.scrollHeight, which clamps to the viewport height (so
+    // a 1200px-tall initial window reports scrollHeight=1200 even when the
+    // actual content is ~280px, padding the capture with empty space).
+    const { w: contentW, h: contentH } = await win.webContents.executeJavaScript(`
+      (async () => {
+        if (document.fonts && document.fonts.ready) {
+          try { await document.fonts.ready; } catch {}
+        }
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const el = document.querySelector('.frame') || document.body.firstElementChild || document.body;
+        const r = el.getBoundingClientRect();
+        return { w: Math.ceil(r.width), h: Math.ceil(r.height) };
+      })()
+    `);
+
+    // Resize the window so capturePage's default "whole visible page"
+    // captures the full content with no bottom cutoff.
+    win.setContentSize(Math.max(1, contentW), Math.max(1, contentH));
+    // Give the resize one frame to settle.
+    await new Promise((r) => setTimeout(r, 120));
+
+    const img = await win.webContents.capturePage({
+      x: 0, y: 0,
+      width: contentW,
+      height: contentH,
+    });
+    return { ok: true, bytes: img.toPNG() };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  } finally {
+    if (win && !win.isDestroyed()) win.destroy();
+  }
+});
+
+// Capture a rectangle of the current web page as PNG bytes. Native to
+// Chromium via webContents.capturePage — works for any mix of HTML / SVG /
+// CSS without html2canvas-style fidelity loss. Returns a Buffer.
+ipcMain.handle('export:capture-region', async (e, rect) => {
+  try {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win) return { ok: false, error: 'no_window' };
+    const img = rect && rect.width && rect.height
+      ? await win.webContents.capturePage({
+          x: Math.max(0, Math.floor(rect.x)),
+          y: Math.max(0, Math.floor(rect.y)),
+          width: Math.ceil(rect.width),
+          height: Math.ceil(rect.height),
+        })
+      : await win.webContents.capturePage();
+    return { ok: true, bytes: img.toPNG() };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+// Save a binary buffer (e.g. PNG bytes) to a user-chosen location.
+ipcMain.handle('export:save-binary', async (e, { suggestedName, bytes, filters } = {}) => {
+  try {
+    const parent = BrowserWindow.fromWebContents(e.sender) || BrowserWindow.getFocusedWindow();
+    const defaultPath = path.join(app.getPath('downloads'), suggestedName || 'tokenly-export.png');
+    const res = await dialog.showSaveDialog(parent, {
+      title: 'Save file',
+      defaultPath,
+      filters: filters || [{ name: 'PNG', extensions: ['png'] }],
+    });
+    if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+    const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+    fs.writeFileSync(res.filePath, buf);
+    return { ok: true, path: res.filePath };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+// Save N binary files to a user-chosen folder. Used for PNG-per-chart export.
+ipcMain.handle('export:save-bundle', async (e, { files, title } = {}) => {
+  try {
+    const parent = BrowserWindow.fromWebContents(e.sender) || BrowserWindow.getFocusedWindow();
+    const res = await dialog.showOpenDialog(parent, {
+      title: title || 'Choose a folder for the charts',
+      defaultPath: app.getPath('downloads'),
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (res.canceled || !res.filePaths?.length) return { ok: false, canceled: true };
+    const dir = res.filePaths[0];
+    const written = [];
+    for (const f of (files || [])) {
+      if (!f?.name || !f?.bytes) continue;
+      const safe = String(f.name).replace(/[^\w.\-]+/g, '_');
+      const p = path.join(dir, safe);
+      fs.writeFileSync(p, Buffer.isBuffer(f.bytes) ? f.bytes : Buffer.from(f.bytes));
+      written.push(p);
+    }
+    return { ok: true, dir, count: written.length };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+// Save a string buffer to a user-chosen location. Used by ExportSheet for
+// CSV / JSON export. Returns { ok, path?, canceled?, error? }.
+ipcMain.handle('export:save-file', async (e, { suggestedName, content, format } = {}) => {
+  try {
+    const win = BrowserWindow.fromWebContents(e.sender) || BrowserWindow.getFocusedWindow();
+    const ext = format === 'json' ? 'json' : 'csv';
+    const filters = format === 'json'
+      ? [{ name: 'JSON', extensions: ['json'] }]
+      : [{ name: 'CSV', extensions: ['csv'] }];
+    const defaultPath = path.join(app.getPath('downloads'), suggestedName || `tokenly-export.${ext}`);
+    const res = await dialog.showSaveDialog(win, {
+      title: 'Export Tokenly data',
+      defaultPath,
+      filters,
+    });
+    if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+    fs.writeFileSync(res.filePath, String(content ?? ''), 'utf8');
+    return { ok: true, path: res.filePath };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
 // Serialize pricing tables for the renderer. Remote tables already have
 // string `match` fields; bundled tables use RegExp objects, which must be
 // converted to their `.source` string before crossing the IPC boundary.
@@ -461,9 +671,8 @@ ipcMain.handle('pricing:refresh', async () => {
 //   - dedupes alerts against ~/Library/Application Support/Tokenly/alerts.json
 //   - fires native macOS notifications (and prunes stale ledger entries)
 //
-// Budget scope in v1: daily thresholds only. Monthly lands in a later release
-// once the renderer carries a full 30d cost trend regardless of selected
-// range. See ROADMAP.md §1.4 / §2.x for the follow-ups.
+// Budget scope: daily thresholds. Thresholds are evaluated against the
+// rolling per-day cost trend that every API fetcher emits.
 
 const DEFAULT_BUDGETS = {
   enabled: true,
@@ -779,10 +988,12 @@ async function fetchOpenAI(key, start, end, days) {
 
   const byModel = {};
   const trend = new Map(); // date -> tokens
+  const byDayDetail = new Map();
   let inTok = 0, outTok = 0, cached = 0, req = 0;
   for (const page of uR.pages) for (const bucket of page.data || []) {
     const dayKey = bucket.start_time;
     let dayTokens = 0;
+    const det = byDayDetail.get(dayKey) || { input: 0, output: 0, cached: 0, requests: 0, cost: 0 };
     for (const r of bucket.results || []) {
       const m = r.model || 'unknown';
       const row = byModel[m] || { model: m, input: 0, output: 0, cached: 0, requests: 0 };
@@ -796,7 +1007,13 @@ async function fetchOpenAI(key, start, end, days) {
       cached += r.input_cached_tokens || 0;
       req += r.num_model_requests || 0;
       dayTokens += (r.input_tokens || 0) + (r.output_tokens || 0);
+
+      det.input    += r.input_tokens         || 0;
+      det.output   += r.output_tokens        || 0;
+      det.cached   += r.input_cached_tokens  || 0;
+      det.requests += r.num_model_requests   || 0;
     }
+    byDayDetail.set(dayKey, det);
     trend.set(dayKey, (trend.get(dayKey) || 0) + dayTokens);
   }
 
@@ -819,8 +1036,22 @@ async function fetchOpenAI(key, start, end, days) {
     }
   }
 
+  // Fold per-day cost into the detail so exports carry a full breakdown.
+  for (const [dayKey, amt] of costByDay.entries()) {
+    const det = byDayDetail.get(dayKey) || { input: 0, output: 0, cached: 0, requests: 0, cost: 0 };
+    det.cost = amt;
+    byDayDetail.set(dayKey, det);
+  }
+
   const sortedTrend = [...trend.entries()].sort(([a], [b]) => a - b).map(([_, v]) => v);
   const sortedCostTrend = [...costByDay.entries()].sort(([a], [b]) => a - b).map(([_, v]) => v);
+  // OpenAI's bucket keys are Unix timestamp seconds — normalize to ISO date for export.
+  const dailyBreakdown = [...byDayDetail.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([k, v]) => ({
+      date: new Date(Number(k) * 1000).toISOString().slice(0, 10),
+      ...v,
+    }));
 
   return {
     totals: { input: inTok, output: outTok, cached, requests: req, cost: totalCost, currency: 'USD' },
@@ -828,6 +1059,7 @@ async function fetchOpenAI(key, start, end, days) {
     lineItems: Object.entries(byLineItem).sort((a, b) => b[1] - a[1]).map(([name, cost]) => ({ name, cost })),
     trend: sortedTrend,
     costTrend: sortedCostTrend,
+    dailyBreakdown,
     windowDays: days,
     note: null,
   };
@@ -862,10 +1094,12 @@ async function fetchAnthropic(key, start, end, days) {
 
   const byModel = {};
   const trend = new Map();
+  const byDayDetail = new Map();
   let inTok = 0, outTok = 0, cacheIn = 0, cacheRead = 0, req = 0;
   for (const page of uR.pages) for (const bucket of page.data || []) {
     const dayKey = bucket.starting_at;
     let dayTokens = 0;
+    const det = byDayDetail.get(dayKey) || { input: 0, output: 0, cache_creation: 0, cache_read: 0, requests: 0, cost: 0 };
     for (const r of bucket.results || []) {
       const m = r.model || 'unknown';
       const row = byModel[m] || { model: m, input: 0, output: 0, cache_creation: 0, cache_read: 0, requests: 0 };
@@ -879,7 +1113,13 @@ async function fetchAnthropic(key, start, end, days) {
       cacheIn += r.cache_creation_input_tokens || 0;
       cacheRead += r.cache_read_input_tokens || 0;
       dayTokens += (r.uncached_input_tokens || 0) + (r.output_tokens || 0) + (r.cache_read_input_tokens || 0);
+
+      det.input          += r.uncached_input_tokens       || 0;
+      det.output         += r.output_tokens               || 0;
+      det.cache_creation += r.cache_creation_input_tokens || 0;
+      det.cache_read     += r.cache_read_input_tokens     || 0;
     }
+    byDayDetail.set(dayKey, det);
     trend.set(dayKey, (trend.get(dayKey) || 0) + dayTokens);
   }
 
@@ -911,14 +1151,28 @@ async function fetchAnthropic(key, start, end, days) {
     }
   }
 
+  // Fold per-day cost into the detail so exports carry a full breakdown.
+  for (const [dayKey, amt] of costByDay.entries()) {
+    const det = byDayDetail.get(dayKey) || { input: 0, output: 0, cache_creation: 0, cache_read: 0, requests: 0, cost: 0 };
+    det.cost = amt;
+    byDayDetail.set(dayKey, det);
+  }
+
   const sortedTrend = [...trend.entries()].sort().map(([_, v]) => v);
   const sortedCostTrend = [...costByDay.entries()].sort().map(([_, v]) => v);
+  const dailyBreakdown = [...byDayDetail.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => ({
+      date: String(k).slice(0, 10),
+      ...v,
+    }));
 
   return {
     totals: { input: inTok, output: outTok, cache_creation: cacheIn, cache_read: cacheRead, requests: req, cost: totalCost, currency: 'USD' },
     models: Object.values(byModel).sort((a, b) => (b.input + b.output + b.cache_read) - (a.input + a.output + a.cache_read)),
     trend: sortedTrend,
     costTrend: sortedCostTrend,
+    dailyBreakdown,
     windowDays: days,
     note: null,
   };
@@ -964,6 +1218,7 @@ async function fetchOpenRouter(key, days) {
   const byModel = {};
   const trend = new Map();
   const costByDay = new Map();
+  const byDayDetail = new Map();
   let inTok = 0, outTok = 0, reasoningTok = 0, req = 0, totalCost = 0;
   for (const r of filtered) {
     const m = r.model || 'unknown';
@@ -983,10 +1238,21 @@ async function fetchOpenRouter(key, days) {
     const dayTokens = (r.prompt_tokens || 0) + (r.completion_tokens || 0);
     trend.set(r.date, (trend.get(r.date) || 0) + dayTokens);
     costByDay.set(r.date, (costByDay.get(r.date) || 0) + rowCost);
+
+    const det = byDayDetail.get(r.date) || { input: 0, output: 0, reasoning: 0, requests: 0, cost: 0 };
+    det.input     += r.prompt_tokens     || 0;
+    det.output    += r.completion_tokens || 0;
+    det.reasoning += r.reasoning_tokens  || 0;
+    det.requests  += r.requests          || 0;
+    det.cost      += rowCost;
+    byDayDetail.set(r.date, det);
   }
 
   const sortedTrend = [...trend.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([_, v]) => v);
   const sortedCostTrend = [...costByDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([_, v]) => v);
+  const dailyBreakdown = [...byDayDetail.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, v]) => ({ date, ...v }));
   const effectiveDays = Math.min(days, 30);
 
   return {
@@ -994,6 +1260,7 @@ async function fetchOpenRouter(key, days) {
     models: Object.values(byModel).sort((a, b) => (b.input + b.output) - (a.input + a.output)),
     trend: sortedTrend,
     costTrend: sortedCostTrend,
+    dailyBreakdown,
     windowDays: effectiveDays,
     balance,
     note: days > 30 ? 'OpenRouter only exposes the last 30 completed UTC days.' : null,
@@ -1188,6 +1455,7 @@ async function fetchClaudeCodeLocal(days) {
   const cutoffMs = Date.now() - days * 86400 * 1000;
   const byModel = {};
   const byDay = new Map();
+  const byDayDetail = new Map();
   const seenIds = new Set();
   let inTok = 0, outTok = 0, cacheIn = 0, cacheRead = 0, req = 0, totalCost = 0;
 
@@ -1238,16 +1506,29 @@ async function fetchClaudeCodeLocal(days) {
         const d = byDay.get(dayKey) || 0;
         const dayTokens = (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_read_input_tokens || 0);
         byDay.set(dayKey, d + dayTokens);
+
+        const det = byDayDetail.get(dayKey) || { input: 0, output: 0, cache_creation: 0, cache_read: 0, requests: 0, cost: 0 };
+        det.input          += u.input_tokens                || 0;
+        det.output         += u.output_tokens               || 0;
+        det.cache_creation += u.cache_creation_input_tokens || 0;
+        det.cache_read     += u.cache_read_input_tokens     || 0;
+        det.requests       += 1;
+        det.cost           += cost;
+        byDayDetail.set(dayKey, det);
       }
     } catch { continue; }
   }
 
   const sortedTrend = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([_, v]) => v);
+  const dailyBreakdown = [...byDayDetail.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, v]) => ({ date, ...v }));
 
   return {
     totals: { input: inTok, output: outTok, cache_creation: cacheIn, cache_read: cacheRead, requests: req, cost: totalCost, currency: 'USD' },
     models: Object.values(byModel).sort((a, b) => b.cost - a.cost),
     trend: sortedTrend,
+    dailyBreakdown,
     windowDays: days,
     note: 'Computed from local ~/.claude/projects logs. Prices are estimates — verify against Anthropic billing for exact charges.',
   };
@@ -1336,6 +1617,7 @@ async function fetchCodexLocal(days) {
 
   const byModel = {};
   const byDay = new Map();
+  const byDayDetail = new Map();
   let inTok = 0, outTok = 0, cachedTok = 0, reasoningTok = 0, turns = 0;
   let totalCost = 0;
   const planTypes = new Map();
@@ -1418,6 +1700,15 @@ async function fetchCodexLocal(days) {
 
           const dayKey = new Date(ts).toISOString().slice(0, 10);
           byDay.set(dayKey, (byDay.get(dayKey) || 0) + inT + outT);
+
+          const det = byDayDetail.get(dayKey) || { input: 0, output: 0, cached: 0, reasoning: 0, requests: 0, cost: 0 };
+          det.input     += inT;
+          det.output    += outT;
+          det.cached    += cachedT;
+          det.reasoning += reasoningT;
+          det.requests  += 1;
+          det.cost      += cost;
+          byDayDetail.set(dayKey, det);
         }
       }
     } catch (err) {
@@ -1427,6 +1718,9 @@ async function fetchCodexLocal(days) {
   }
 
   const sortedTrend = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([_, v]) => v);
+  const dailyBreakdown = [...byDayDetail.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, v]) => ({ date, ...v }));
   // Compose subscription-aware note.
   const planList = [...planTypes.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => p).filter(Boolean).slice(0, 3);
   const subLabel = planList.length
@@ -1437,6 +1731,7 @@ async function fetchCodexLocal(days) {
     totals: { input: inTok, output: outTok, cached: cachedTok, reasoning: reasoningTok, requests: turns, cost: totalCost, currency: 'USD' },
     models: Object.values(byModel).sort((a, b) => b.cost - a.cost),
     trend: sortedTrend,
+    dailyBreakdown,
     windowDays: days,
     rateLimits: latestRateLimits,
     note: `Computed from ~/.codex/sessions rollouts. ${subLabel}`,
@@ -1505,6 +1800,7 @@ async function fetchGeminiCLILocal(days) {
 
   const byModel = {};
   const byDay = new Map();
+  const byDayDetail = new Map();
   const seenIds = new Set();
   let inTok = 0, outTok = 0, cachedTok = 0, thoughtsTok = 0, toolTok = 0, req = 0, totalCost = 0;
 
@@ -1566,11 +1862,24 @@ async function fetchGeminiCLILocal(days) {
 
         const dayKey = new Date(ts).toISOString().slice(0, 10);
         byDay.set(dayKey, (byDay.get(dayKey) || 0) + (t.total || 0));
+
+        const det = byDayDetail.get(dayKey) || { input: 0, output: 0, cached: 0, reasoning: 0, tool: 0, requests: 0, cost: 0 };
+        det.input     += t.input    || 0;
+        det.output    += t.output   || 0;
+        det.cached    += t.cached   || 0;
+        det.reasoning += t.thoughts || 0;
+        det.tool      += t.tool     || 0;
+        det.requests  += 1;
+        det.cost      += cost;
+        byDayDetail.set(dayKey, det);
       }
     }
   }
 
   const sortedTrend = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([_, v]) => v);
+  const dailyBreakdown = [...byDayDetail.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, v]) => ({ date, ...v }));
 
   return {
     totals: {
@@ -1580,6 +1889,7 @@ async function fetchGeminiCLILocal(days) {
     },
     models: Object.values(byModel).sort((a, b) => b.cost - a.cost),
     trend: sortedTrend,
+    dailyBreakdown,
     windowDays: days,
     note: 'Computed from local ~/.gemini/tmp session files. Prices are estimates from published Google rates.',
   };

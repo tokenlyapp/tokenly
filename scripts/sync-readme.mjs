@@ -4,13 +4,13 @@
  *
  * Triggered by .github/workflows/readme-sync.yml on pushes to main that touch
  * truth-source files (main.js, app/components/**, package.json, PROJECT.md,
- * ROADMAP.md, scripts/**). Also runnable via workflow_dispatch and on
- * release:published so a new tag always reconciles the README.
+ * scripts/**). Also runnable via workflow_dispatch and on release:published
+ * so a new tag always reconciles the README.
  *
  * Pipeline:
  *   1. Load current README.md
  *   2. Load truth sources: package.json, PROJECT.md (§0 + architecture),
- *      ROADMAP.md (shipped list), recent commit log
+ *      recent commit log
  *   3. Ask Claude Sonnet to return either the full updated README or the
  *      sentinel string NO_CHANGES_NEEDED
  *   4. Diff; if identical to on-disk, exit 0 without committing
@@ -75,13 +75,6 @@ const projectSummary = projectMd
   ? projectMd.split('\n').slice(0, 260).join('\n')
   : '';
 
-// ROADMAP.md — send the shipped list + Tier 1 so Claude can map roadmap to
-// what the README claims is shipped.
-const roadmapMd = await readIfExists('ROADMAP.md');
-const roadmapSummary = roadmapMd
-  ? roadmapMd.split('\n').slice(0, 180).join('\n')
-  : '';
-
 const commitRange = process.env.COMMIT_RANGE || 'HEAD~40..HEAD';
 const commitLog = safeSh(`git log --no-merges --pretty=format:'%h %s' ${commitRange}`)
   .split('\n')
@@ -90,7 +83,7 @@ const commitLog = safeSh(`git log --no-merges --pretty=format:'%h %s' ${commitRa
 
 // Paths that tend to change what the README should say.
 const changedFiles = safeSh(
-  `git diff --name-only ${commitRange} -- main.js preload.js app/ scripts/ package.json PROJECT.md ROADMAP.md`
+  `git diff --name-only ${commitRange} -- main.js preload.js app/ scripts/ package.json PROJECT.md`
 );
 
 console.log(`[readme-sync] version: ${version}`);
@@ -108,19 +101,17 @@ Your job: keep \`README.md\` 100% accurate to the current state of the software,
 - **Current README.md** — authoritative for structure, voice, and formatting style
 - **package.json** — authoritative for the current version number and product metadata
 - **PROJECT.md** — authoritative for architecture, file layout, and shipped feature state
-- **ROADMAP.md** — authoritative for what has shipped vs. what is planned ("✅ Shipped" section)
 - **Recent commit log** — signals what has changed lately
 - **Changed files** — signals which parts of the README are most likely stale
 
 # What to change (only if the README is wrong about it)
 
 - **Version numbers** anywhere they appear (badges, copy, download links — though badges pull live from GitHub and rarely need hand-editing)
-- **Feature lists** — if a feature is now shipped but the README still calls it roadmap, move it up. If a feature in the README doesn't exist in the code, remove it.
+- **Feature lists** — if the README describes a feature that doesn't exist in the code, remove it. If code ships a feature the README omits, add it.
 - **Tech stack** — Electron / React / dependency versions, if package.json changed
 - **File paths and directory structure** — if project layout changed
 - **Pricing & tier splits** — the Free vs. Max table must match the current pricing model
 - **FAQ answers** — if the underlying facts changed
-- **Roadmap teaser** — the highlighted Tier-1/Tier-2 items at the bottom should reflect what's actually next
 
 # What NOT to change
 
@@ -163,10 +154,6 @@ ${packageJson || '{}'}
 # Current PROJECT.md (truncated — first ~260 lines)
 
 ${projectSummary || '(no PROJECT.md)'}
-
-# Current ROADMAP.md (truncated — first ~180 lines)
-
-${roadmapSummary || '(no ROADMAP.md)'}
 
 # Recent commits (${commitRange})
 

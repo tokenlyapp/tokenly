@@ -99,7 +99,8 @@ function BudgetsSheet({ open, onClose, onBack }) {
         style={{
           position: 'absolute', left: 0, right: 0, bottom: 0,
           background: 'linear-gradient(180deg, #15151f 0%, #0d0d14 100%)',
-          borderTop: `1px solid ${t.cardBorderStrong}`,
+          borderTop: '1px solid rgba(232,164,65,0.45)',
+          boxShadow: '0 -1px 24px rgba(232,164,65,0.12)',
           borderRadius: '16px 16px 0 0',
           padding: '10px 16px 20px',
           transform: open ? 'translateY(0)' : 'translateY(100%)',
@@ -115,7 +116,16 @@ function BudgetsSheet({ open, onClose, onBack }) {
           {onBack && (
             <IconBtn onClick={onBack} title="Back to Settings">{Icons.arrowLeft}</IconBtn>
           )}
-          <div style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>Budget Alerts</div>
+          <div style={{ fontSize: 14, fontWeight: 600, flex: 1, display: 'flex', alignItems: 'center', gap: 6 }}>
+            Budget Alerts
+            <span style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
+              padding: '2px 6px', borderRadius: 4, textTransform: 'uppercase',
+              color: '#1a1408', lineHeight: 1,
+              background: 'linear-gradient(135deg, #ffd772, #e8a441)',
+              border: '1px solid rgba(232,164,65,0.55)',
+            }}>Max</span>
+          </div>
         </div>
         <div style={{
           fontSize: 10.5, color: t.textDim, marginTop: 4, marginBottom: 12, lineHeight: 1.5,

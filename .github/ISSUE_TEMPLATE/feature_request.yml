@@ -6,14 +6,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the idea. Tokenly's roadmap is deliberately narrow — see `ROADMAP.md` in the repo for what's already queued. Requests that duplicate existing roadmap items get closed but linked.
+        Thanks for the idea. Please skim the open issues first so we don't duplicate one that's already tracked.
 
   - type: checkboxes
     id: preflight
     attributes:
       label: Before you file
       options:
-        - label: I've skimmed the [open issues](https://github.com/tokenlyapp/tokenly/issues?q=is%3Aissue) and [ROADMAP.md](https://github.com/tokenlyapp/tokenly/blob/main/ROADMAP.md) — this isn't already there.
+        - label: I've skimmed the [open issues](https://github.com/tokenlyapp/tokenly/issues?q=is%3Aissue) — this isn't already there.
           required: true
 
   - type: textarea

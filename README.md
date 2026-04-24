@@ -57,7 +57,6 @@ Every token and dollar your AI tools consume, across six providers, surfaced in 
 - [System requirements](#system-requirements)
 - [FAQ](#faq)
 - [Build from source](#build-from-source)
-- [Roadmap](#roadmap)
 - [Support](#support)
 
 ---
@@ -68,12 +67,12 @@ Tokenly is a native macOS menu-bar app that shows you — **live, in real time**
 
 It answers the question every AI-powered developer asks at the end of the month: *"Where did all that money go?"*
 
-Two audiences it was built for:
+Two use cases it covers:
 
-1. **Subscription users on Claude Max, ChatGPT Team, or Cursor-adjacent tools** — who want to see the ROI of their flat-rate plan in token-equivalents. Would pay-as-you-go have been cheaper?
-2. **Teams with OpenAI / Anthropic / OpenRouter admin keys** — who want authoritative per-day spend without waiting for the month-end invoice.
+1. **Subscription usage** (Claude Max, ChatGPT Team, Cursor-adjacent tools) — see the list-price value of tokens you're burning inside a flat-rate plan.
+2. **Admin-API spend** (OpenAI, Anthropic, OpenRouter) — authoritative per-day dollars without waiting for the month-end invoice.
 
-Tokenly serves both. Every card is labeled either **list-price estimate** (amber, tokens-first) or **actual billed spend** (green, dollars-first) so you always know which number is real money.
+Every card is labeled either **list-price estimate** (amber, tokens-first) or **actual billed spend** (green, dollars-first) so you always know which number is real money.
 
 > **It's a measurement tool, not a gateway.** Tokenly never touches your prompts, your responses, or your API traffic. It reads usage data that already exists on your Mac or queries your provider's own billing endpoints directly. Your keys stay on your device, encrypted via the macOS Keychain.
 
@@ -150,11 +149,25 @@ That's it. No signup, no configuration, no telemetry. If you want to unlock API-
 - **Daily spend summary** — one notification at your chosen local hour (default 5 pm) summarizing the day's burn across every provider.
 - **Stateful ledger** — alerts are deduplicated via `~/Library/Application Support/Tokenly/alerts.json` so you never get spammed.
 
+### Analytics view *(Tokenly Max)*
+
+- **KPI tiles** — total spend or tokens in the current window, daily average, 30-day projection with trend arrow, top model.
+- **Cost / Tokens tab toggle** — flip every chart between dollar and token metrics with one click.
+- **Stacked-area over time** — per-day totals stacked by provider, with an average reference line and a peak-day callout.
+- **Tokens by category** — stacked bars per day (input / output / cache read / cache write / reasoning / tool) with a live summary strip.
+- **Spend projection** — linear regression over the trailing window projects the next 30 days, with past-vs-forecast pace comparison.
+- **Top models** — ranked horizontal bars showing cost, tokens, and requests per model across the selected providers.
+- **PDF + PNG export** — export the whole view as a polished multi-page PDF report, or each chart as its own retina PNG (individual or bundle).
+
+### Data export *(Tokenly Max)*
+
+- **CSV or JSON** — export the current window as Daily trend (one row per day per provider with every token category), Provider totals, or Per-model breakdown.
+- **Live preview** — see the first rows before saving; copy to clipboard or save via native dialog.
+
 ### Power-user touches
 
 - **OpenRouter remaining-balance strip** — green ⚡ bar on the OpenRouter card showing `$X of $Y left`.
 - **Codex rate-limit quota strip** — `5h 32% / 7d 67% / team` pulled live from Codex's rollout events.
-- **Per-project breakdown** *(roadmap)* — group Claude Code spend by working directory for consultants and freelancers.
 - **Tray source + period selector** — pick which single provider (or "All") and which period ("Today", "Last 7d", etc.) feeds the menu-bar counter.
 - **Logo / monogram badge toggle** — in Settings → Appearance, swap brand SVG logos for colored initials. Your call.
 - **Auto-update** — every installed Tokenly ≥ 1.2.1 polls GitHub Releases every 4 hours, downloads silently, prompts to install. No reinstalls, no reconfiguration.
@@ -311,7 +324,7 @@ No — the usage/cost endpoints require **admin**-scoped keys. For OpenAI that's
 **Claude**: yes, via the Claude Code / Claude Desktop card (both write to `~/.claude/projects/`). **ChatGPT**: the desktop app encrypts local conversations at rest since mid-2024, so local extraction isn't possible. Codex CLI/Desktop usage *is* tracked.
 
 **What about Cursor, Windsurf, Antigravity?**
-Investigated and declined — see [`ROADMAP.md`](ROADMAP.md) → "Explicitly not shipping." Cursor's local SQLite is opaque and their dashboard is authoritative; Antigravity syncs state to Google's servers and leaves nothing locally parseable. If any of them ship a public consumer usage API, that changes.
+Not supported. Cursor's local SQLite is opaque and their own dashboard is authoritative. Antigravity syncs state to Google's servers and leaves nothing locally parseable. If any of them expose a public consumer usage API, that would change.
 
 **What if a model's price changes?**
 Tokenly fetches `trytokenly.app/pricing.json` on launch and every 24 hours. When Anthropic / OpenAI / OpenRouter changes rates, a GitHub Action flags the change, a pull request is opened, and after review the new rates ship to every installed copy within minutes — no app rebuild, no reinstall.
@@ -320,7 +333,7 @@ Tokenly fetches `trytokenly.app/pricing.json` on launch and every 24 hours. When
 Yes. Anthropic 5-minute cache writes are multiplied 1.25×, 1-hour writes 2×, cache reads 0.1×. OpenAI cached input is priced at 0.1×. OpenAI reasoning tokens are already rolled into output tokens — Tokenly does **not** double-count them.
 
 **Is there a Windows or Linux version?**
-No, and no plans to build one. Tokenly is deliberately a Mac-native indie tool. Team mode *(on the long roadmap)* would be the point at which cross-platform gets reconsidered.
+No. Tokenly is a Mac-native indie tool.
 
 **How do I uninstall?**
 Drag `Tokenly.app` to Trash. Optionally `rm -rf ~/Library/Application\ Support/Tokenly` to clear keys/prefs. Optionally `rm ~/Library/Preferences/app.tokenly.desktop.plist` for window state.
@@ -370,25 +383,10 @@ Requires an Apple Developer ID and notarization credentials set in the environme
 ├── assets/                  Provider brand logos
 ├── build/                   Icons, tray templates, entitlements
 ├── scripts/                 Helper scripts
-├── PROJECT.md               Complete build record — read before architectural changes
-└── ROADMAP.md               Prioritized feature pipeline
+└── PROJECT.md               Complete build record — read before architectural changes
 ```
 
----
-
-## Roadmap
-
-The full prioritized roadmap lives in [`ROADMAP.md`](ROADMAP.md). Highlights of what's next:
-
-- **Per-project Claude Code breakdown** — group spend by working directory
-- **CSV / JSON export** — for finance and expense reconciliation
-- **Compare ranges** — "this 30d vs. prior 30d" with sparkline diffs
-- **Pricing overrides** — plug in negotiated enterprise rates
-- **BYOM custom endpoints** — LiteLLM, Helicone, self-hosted Ollama proxies
-- **Floating pinned widget** — frameless always-on-top tile for the permanently-curious
-- **macOS launch-at-login** + full keyboard-shortcut coverage
-
-Deliberately **not** on the roadmap: no telemetry, no ChatGPT / Claude.ai cookie scraping, no built-in AI assistant, no Windows/Linux builds, no in-app credit purchases.
+Things Tokenly deliberately **does not** do: no telemetry, no ChatGPT / Claude.ai cookie scraping, no built-in AI assistant, no Windows/Linux builds, no in-app credit purchases.
 
 ---
 

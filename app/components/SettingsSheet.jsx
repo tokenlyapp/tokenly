@@ -9,6 +9,7 @@ function SettingsSheet({
   onOpenPricing,
   onOpenBudgets,
   onOpenApiKeys,
+  onOpenExport,
   onOpenLicense,
   isPro = false,
 }) {
@@ -244,7 +245,7 @@ function SettingsSheet({
           />
         )}
 
-        {/* API Keys — locked behind Tokenly Max */}
+        {/* API Keys — Max feature */}
         {onOpenApiKeys && (
           <SettingsEntry
             t={t}
@@ -257,11 +258,12 @@ function SettingsSheet({
                 : 'Connect OpenAI, Anthropic, or OpenRouter admin keys.'
             }
             locked={!isPro}
+            maxUnlocked={isPro}
             onClick={isPro ? onOpenApiKeys : onOpenLicense}
           />
         )}
 
-        {/* Budget alerts — locked behind Tokenly Max */}
+        {/* Budget alerts — Max feature */}
         {onOpenBudgets && (
           <SettingsEntry
             t={t}
@@ -272,7 +274,24 @@ function SettingsSheet({
                 : 'Get notified when API spend crosses 50% / 80% / 100% of your daily budget.'
             }
             locked={!isPro}
+            maxUnlocked={isPro}
             onClick={isPro ? onOpenBudgets : onOpenLicense}
+          />
+        )}
+
+        {/* Export data — Max feature */}
+        {onOpenExport && (
+          <SettingsEntry
+            t={t}
+            title="Export data"
+            subtitle={
+              isPro
+                ? `CSV or JSON of the current ${rangeShort} window — daily trend, totals, or per-model breakdown.`
+                : 'Download your usage as CSV or JSON for spreadsheets, reports, or a DataFrame.'
+            }
+            locked={!isPro}
+            maxUnlocked={isPro}
+            onClick={isPro ? onOpenExport : onOpenLicense}
           />
         )}
       </section>
@@ -280,22 +299,31 @@ function SettingsSheet({
   );
 }
 
-// Navigation row used for each "→" entry in the Settings sheet. When
-// `locked`, dims the content and swaps the arrow for a 🔒 + "Unlock
-// Tokenly Max" chip. Click still routes — caller decides whether to open
-// the real sheet or the LicenseSheet.
-function SettingsEntry({ t, title, subtitle, onClick, locked }) {
+// Navigation row. Three visual states:
+//   locked        — muted purple, "Unlock Max" chip.
+//   maxUnlocked   — gold-accented border + gem icon + subtle gold glow.
+//   plain         — default row (used for non-Max entries like pricing).
+function SettingsEntry({ t, title, subtitle, onClick, locked, maxUnlocked }) {
+  const borderColor =
+    locked       ? 'rgba(124,92,255,0.22)' :
+    maxUnlocked  ? 'rgba(232,164,65,0.4)' :
+                   t.cardBorder;
+
   return (
     <button
       onClick={onClick}
       style={{
         width: '100%', textAlign: 'left',
-        background: t.card, border: `1px solid ${locked ? 'rgba(124,92,255,0.22)' : t.cardBorder}`,
+        background: maxUnlocked
+          ? 'linear-gradient(135deg, rgba(232,164,65,0.08) 0%, rgba(124,92,255,0.04) 100%)'
+          : t.card,
+        border: `1px solid ${borderColor}`,
         borderRadius: 10, padding: '10px 12px', marginBottom: 8,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
         cursor: 'pointer', fontFamily: 'inherit', color: t.text,
         opacity: locked ? 0.72 : 1,
-        transition: 'opacity .15s, border-color .15s',
+        boxShadow: maxUnlocked ? '0 0 0 1px rgba(232,164,65,0.08) inset, 0 2px 10px rgba(232,164,65,0.06)' : 'none',
+        transition: 'opacity .15s, border-color .15s, box-shadow .15s',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
@@ -313,6 +341,21 @@ function SettingsEntry({ t, title, subtitle, onClick, locked }) {
             </svg>
           </div>
         )}
+        {maxUnlocked && (
+          <div style={{
+            width: 22, height: 22, borderRadius: 6,
+            background: 'linear-gradient(135deg, rgba(255,215,114,0.25), rgba(232,164,65,0.15))',
+            border: '1px solid rgba(232,164,65,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#ffd772', flexShrink: 0,
+            boxShadow: '0 0 8px rgba(232,164,65,0.25)',
+          }}>
+            {/* Gem / star glyph — subtle nod to the "Max" tier without screaming it */}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2l2.5 6.5L21 9l-5 4.5L17.5 21 12 17l-5.5 4L8 13.5 3 9l6.5-.5z" />
+            </svg>
+          </div>
+        )}
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 12, fontWeight: 600 }}>{title}</div>
           <div style={{ fontSize: 10, color: t.textMute, marginTop: 2, lineHeight: 1.45 }}>{subtitle}</div>
@@ -325,6 +368,15 @@ function SettingsEntry({ t, title, subtitle, onClick, locked }) {
           border: '1px solid rgba(124,92,255,0.3)',
           padding: '3px 7px', borderRadius: 5, flexShrink: 0, whiteSpace: 'nowrap',
         }}>Unlock Max</span>
+      ) : maxUnlocked ? (
+        <span style={{
+          fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
+          color: '#1a1408',
+          background: 'linear-gradient(135deg, #ffd772, #e8a441)',
+          border: '1px solid rgba(232,164,65,0.55)',
+          padding: '3px 7px', borderRadius: 5, flexShrink: 0, whiteSpace: 'nowrap',
+          lineHeight: 1,
+        }}>Max</span>
       ) : (
         <span style={{ color: t.textDim, flexShrink: 0, fontSize: 14 }}>→</span>
       )}

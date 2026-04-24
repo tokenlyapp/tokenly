@@ -9,6 +9,8 @@ function LLMUsageApp() {
   const [pricingOpen, setPricingOpen] = useStateA(false);
   const [budgetsOpen, setBudgetsOpen] = useStateA(false);
   const [apiKeysOpen, setApiKeysOpen] = useStateA(false);
+  const [exportOpen, setExportOpen] = useStateA(false);
+  const [chartsOpen, setChartsOpen] = useStateA(false);
   const [licenseOpen, setLicenseOpen] = useStateA(false);
   const [licenseState, setLicenseState] = useStateA({ tier: 'free', license: null });
   const isPro = licenseState.tier === 'max';
@@ -421,6 +423,27 @@ function LLMUsageApp() {
         </div>
         <div style={{ display: 'flex', gap: 6, WebkitAppRegion: 'no-drag', alignItems: 'center', flexShrink: 0 }}>
           <IconBtn onClick={() => refreshAll()} title="Refresh" spinning={spinning}>{Icons.refresh}</IconBtn>
+          {/* Analytics — Max feature. When unlocked, wrap in a gold-tinted
+              container so the entry point reads as a premium surface. */}
+          <div style={{
+            background: isPro ? 'linear-gradient(135deg, rgba(255,215,114,0.2), rgba(232,164,65,0.08))' : 'transparent',
+            border: isPro ? '1px solid rgba(232,164,65,0.5)' : '1px solid transparent',
+            borderRadius: 9,
+            boxShadow: isPro ? '0 0 10px rgba(232,164,65,0.25)' : 'none',
+            display: 'inline-flex', padding: 0,
+            transition: 'box-shadow .15s, border-color .15s',
+          }}>
+            <IconBtn
+              onClick={() => isPro ? setChartsOpen(true) : setLicenseOpen(true)}
+              title={isPro ? 'Analytics' : 'Analytics — unlock with Tokenly Max'}
+              active={chartsOpen}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={isPro ? '#ffd772' : 'currentColor'} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 3v18h18" />
+                <path d="M7 14l4-4 3 3 5-6" />
+              </svg>
+            </IconBtn>
+          </div>
           <IconBtn onClick={() => setSheetOpen(true)} title="API Keys" active={sheetOpen}>{Icons.gear}</IconBtn>
           {isPopover ? (
             <IconBtn onClick={() => window.api.detachWindow()} title="Detach to desktop window">
@@ -503,6 +526,7 @@ function LLMUsageApp() {
         onOpenPricing={() => { setSheetOpen(false); setPricingOpen(true); }}
         onOpenBudgets={() => { setSheetOpen(false); setBudgetsOpen(true); }}
         onOpenApiKeys={() => { setSheetOpen(false); setApiKeysOpen(true); }}
+        onOpenExport={() => { setSheetOpen(false); setExportOpen(true); }}
         onOpenLicense={() => { setSheetOpen(false); setLicenseOpen(true); }}
         isPro={isPro}
       />
@@ -525,15 +549,38 @@ function LLMUsageApp() {
         onClose={() => setBudgetsOpen(false)}
         onBack={() => { setBudgetsOpen(false); setSheetOpen(true); }}
       />
-      <LicenseSheet
-        open={licenseOpen}
-        onClose={() => setLicenseOpen(false)}
-        onBack={() => { setLicenseOpen(false); setSheetOpen(true); }}
-        tier={licenseState.tier}
-        license={licenseState.license}
-        onLicenseChange={setLicenseState}
-        onOpenExternal={onOpenExternal}
+      <ExportSheet
+        open={exportOpen && isPro}
+        onClose={() => setExportOpen(false)}
+        onBack={() => { setExportOpen(false); setSheetOpen(true); }}
+        usage={usage}
+        meta={meta}
+        days={days}
+        isPro={isPro}
       />
+      <ChartsSheet
+        open={chartsOpen && isPro}
+        onClose={() => setChartsOpen(false)}
+        onBack={() => setChartsOpen(false)}
+        usage={usage}
+        days={days}
+        onDaysChange={updateDays}
+        isPro={isPro}
+      />
+      {/* LicenseSheet is unmounted while Analytics is open. Belt-and-suspenders
+          against a class of z-index / transform-escape bugs where a same-layer
+          bottom sheet's content could peek through the scrollable Analytics view. */}
+      {!chartsOpen && (
+        <LicenseSheet
+          open={licenseOpen}
+          onClose={() => setLicenseOpen(false)}
+          onBack={() => { setLicenseOpen(false); setSheetOpen(true); }}
+          tier={licenseState.tier}
+          license={licenseState.license}
+          onLicenseChange={setLicenseState}
+          onOpenExternal={onOpenExternal}
+        />
+      )}
     </div>
     </BadgeStyleContext.Provider>
   );
