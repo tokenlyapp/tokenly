@@ -242,6 +242,12 @@ function SettingsSheet({
             title="View current LLM token pricing"
             subtitle="Per-model USD rates the app uses to estimate cost. Auto-refreshed daily."
             onClick={onOpenPricing}
+            icon={(
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="1" x2="12" y2="23" />
+                <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+              </svg>
+            )}
           />
         )}
 
@@ -260,6 +266,14 @@ function SettingsSheet({
             locked={!isPro}
             maxUnlocked={isPro}
             onClick={isPro ? onOpenApiKeys : onOpenLicense}
+            icon={(
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 2l-9.6 9.6" />
+                <circle cx="7.5" cy="15.5" r="5.5" />
+                <path d="M15.5 7.5L19 11" />
+                <path d="M17.5 5.5L21 9" />
+              </svg>
+            )}
           />
         )}
 
@@ -276,6 +290,12 @@ function SettingsSheet({
             locked={!isPro}
             maxUnlocked={isPro}
             onClick={isPro ? onOpenBudgets : onOpenLicense}
+            icon={(
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+            )}
           />
         )}
 
@@ -292,6 +312,13 @@ function SettingsSheet({
             locked={!isPro}
             maxUnlocked={isPro}
             onClick={isPro ? onOpenExport : onOpenLicense}
+            icon={(
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            )}
           />
         )}
       </section>
@@ -299,61 +326,35 @@ function SettingsSheet({
   );
 }
 
-// Navigation row. Three visual states:
-//   locked        — muted purple, "Unlock Max" chip.
-//   maxUnlocked   — gold-accented border + gem icon + subtle gold glow.
-//   plain         — default row (used for non-Max entries like pricing).
-function SettingsEntry({ t, title, subtitle, onClick, locked, maxUnlocked }) {
-  const borderColor =
-    locked       ? 'rgba(124,92,255,0.22)' :
-    maxUnlocked  ? 'rgba(232,164,65,0.4)' :
-                   t.cardBorder;
-
+// Navigation row. The left slot takes an `icon` describing what the button
+// does (key, bell, download, etc.). Max-gated rows indicate their tier via
+// the right-side chip only — no full gold outline/background on the button
+// itself, so the list stays visually calm.
+function SettingsEntry({ t, title, subtitle, onClick, locked, maxUnlocked, icon }) {
   return (
     <button
       onClick={onClick}
       style={{
         width: '100%', textAlign: 'left',
-        background: maxUnlocked
-          ? 'linear-gradient(135deg, rgba(232,164,65,0.08) 0%, rgba(124,92,255,0.04) 100%)'
-          : t.card,
-        border: `1px solid ${borderColor}`,
+        background: t.card,
+        border: `1px solid ${t.cardBorder}`,
         borderRadius: 10, padding: '10px 12px', marginBottom: 8,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
         cursor: 'pointer', fontFamily: 'inherit', color: t.text,
         opacity: locked ? 0.72 : 1,
-        boxShadow: maxUnlocked ? '0 0 0 1px rgba(232,164,65,0.08) inset, 0 2px 10px rgba(232,164,65,0.06)' : 'none',
-        transition: 'opacity .15s, border-color .15s, box-shadow .15s',
+        transition: 'opacity .15s, border-color .15s',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-        {locked && (
+        {icon && (
           <div style={{
             width: 22, height: 22, borderRadius: 6,
-            background: 'rgba(124,92,255,0.15)',
-            border: '1px solid rgba(124,92,255,0.3)',
+            background: 'rgba(255,255,255,0.04)',
+            border: `1px solid ${t.cardBorder}`,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: t.accent, flexShrink: 0,
+            color: t.textDim, flexShrink: 0,
           }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="4" y="11" width="16" height="10" rx="2" />
-              <path d="M8 11V7a4 4 0 0 1 8 0v4" />
-            </svg>
-          </div>
-        )}
-        {maxUnlocked && (
-          <div style={{
-            width: 22, height: 22, borderRadius: 6,
-            background: 'linear-gradient(135deg, rgba(255,215,114,0.25), rgba(232,164,65,0.15))',
-            border: '1px solid rgba(232,164,65,0.5)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: '#ffd772', flexShrink: 0,
-            boxShadow: '0 0 8px rgba(232,164,65,0.25)',
-          }}>
-            {/* Gem / star glyph — subtle nod to the "Max" tier without screaming it */}
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 2l2.5 6.5L21 9l-5 4.5L17.5 21 12 17l-5.5 4L8 13.5 3 9l6.5-.5z" />
-            </svg>
+            {icon}
           </div>
         )}
         <div style={{ minWidth: 0 }}>
