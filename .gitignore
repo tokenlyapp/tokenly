@@ -11,3 +11,6 @@ dist/
 
 # Ignore tracked binaries that live in build/ — keep the source .svg
 build/icon.iconset/
+
+# Launch / marketing playbook lives outside the repo at ~/Documents/Tokenly/launch/
+/marketing/
