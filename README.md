@@ -371,8 +371,7 @@ Requires an Apple Developer ID and notarization credentials set in the environme
 ├── build/                   Icons, tray templates, entitlements
 ├── scripts/                 Helper scripts
 ├── PROJECT.md               Complete build record — read before architectural changes
-├── ROADMAP.md               Prioritized feature pipeline
-└── OPERATIONS.md            Release, infra, and support playbook
+└── ROADMAP.md               Prioritized feature pipeline
 ```
 
 ---

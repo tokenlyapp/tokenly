@@ -90,7 +90,7 @@ const commitLog = safeSh(`git log --no-merges --pretty=format:'%h %s' ${commitRa
 
 // Paths that tend to change what the README should say.
 const changedFiles = safeSh(
-  `git diff --name-only ${commitRange} -- main.js preload.js app/ scripts/ package.json PROJECT.md ROADMAP.md OPERATIONS.md`
+  `git diff --name-only ${commitRange} -- main.js preload.js app/ scripts/ package.json PROJECT.md ROADMAP.md`
 );
 
 console.log(`[readme-sync] version: ${version}`);

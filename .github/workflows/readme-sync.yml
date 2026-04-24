@@ -29,7 +29,6 @@ on:
       - 'package.json'
       - 'PROJECT.md'
       - 'ROADMAP.md'
-      - 'OPERATIONS.md'
       - 'scripts/**'
       - '.github/workflows/readme-sync.yml'
   release:

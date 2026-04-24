@@ -487,8 +487,6 @@ Since 1.4.0, the authoritative pricing table is `https://trytokenly.app/pricing.
 
 **Historical windows re-compute at the new prices on every refresh**, so prior days re-price themselves. That's intentional; it means the list-price estimate always reflects *current* list prices, which is the most useful baseline for subscription-ROI decisions.
 
-See OPERATIONS.md § "Pricing table updates" for the full procedure.
-
 ### Cache / reasoning multipliers (rarely change)
 
 - Anthropic 5m cache write: 1.25× input
@@ -565,7 +563,7 @@ Every Tokenly install ≥ 1.2.1 silently checks GitHub for new releases and prom
 1. `npm run dist:publish` — builds, signs, notarizes, uploads to GitHub Releases (for existing-customer auto-update)
 2. `netlify blobs:set downloads Tokenly.dmg --input dist/Tokenly-X.Y.Z-universal.dmg` — replaces the blob that Stripe-checkout serves (for new-customer purchases)
 
-Forgetting either leaves one audience stuck. See OPERATIONS.md for the checklist.
+Forgetting either leaves one audience stuck.
 
 ---
 
