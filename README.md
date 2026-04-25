@@ -92,15 +92,31 @@ Six providers, grouped by how they're tracked:
 
 These just work. Install Tokenly, open it, and if you've ever used any of these tools on your Mac, you'll see your full historical usage in seconds.
 
+### Live subscription quotas (no keys — uses your CLI's existing OAuth)
+
+If you've signed into the Claude / Codex / Gemini CLI on this Mac, Tokenly reads the OAuth tokens those CLIs already keep on disk and surfaces your **real subscription quota** right on each card — pulled from the same private endpoints the CLIs themselves use. No extra setup.
+
+| Provider | What you get | Endpoint |
+|---|---|---|
+| **Claude Pro / Max** | 5h session window · 7d weekly window · Opus-specific quota · Overage cap (e.g. `$24.18 of $40`) · plan tier | `api.anthropic.com/api/oauth/usage` |
+| **ChatGPT Pro / Plus / Team / Business** | 5h session window · 7d weekly window · credits balance · plan tier | `chatgpt.com/backend-api/wham/usage` |
+| **Gemini Free / Paid / Workspace** | Per-model-family quota (Pro / Flash / Flash Lite) · tier | `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` |
+
+Each row gets a brand-themed progress bar and a "Resets in 3h 17m" countdown. Token refresh is automatic — Tokenly self-heals across hours, days, and OS restarts without you ever needing to re-run `claude` / `codex` / `gemini`.
+
 ### API billing (paid plan — one key unlocks accurate spend)
 
 | Provider | What it shows | Key type required |
 |---|---|---|
 | **OpenAI API** | Per-day token and dollar spend, grouped by model | Admin API key (`sk-admin-…`) |
 | **Anthropic API** | Per-day token and dollar spend, grouped by model | Admin key (`sk-ant-admin-…`) |
-| **OpenRouter** | Per-day activity **plus** remaining balance (`$X of $Y left`) | Management key |
+| **OpenRouter** | Per-day activity · account-level balance · per-key spend cap · rate-limit info | Management key |
 
 Keys are encrypted with macOS `safeStorage` (Keychain-backed AES) the moment you paste them, and only the signed Tokenly binary can decrypt them. The keys never leave your device.
+
+### Provider status
+
+The OpenAI and Anthropic cards show a small status pill in the title row whenever upstream is degraded — minor (amber) / major (red, pulsing) / outage / maintenance. Click the pill to open the provider's status page. Polled every 5 minutes from the official Statuspage.io feeds; hidden when everything's operational.
 
 ---
 
@@ -130,7 +146,7 @@ That's it. No signup, no configuration, no telemetry. If you want to unlock API-
 
 - **Live menu-bar counter** — today's tokens (or dollars) always visible. Click the tray icon for the full dashboard.
 - **Two display modes** — frameless popover under the tray icon (default) or a detachable desktop window you can dock anywhere.
-- **Six provider cards** — collapsible, color-coded by family, each showing totals, per-model breakdown, and a 6-range period picker (1d / 7d / 30d / 60d / 90d / 180d).
+- **Six provider cards** — collapsible, color-coded by family, each showing totals, per-model breakdown, and a 6-range period picker (1d / 7d / 14d / 30d / 90d / 180d).
 - **Sub-second refresh** — `fs.watch` on local log directories means a new Claude turn lights up the card within moments of the assistant finishing.
 - **Freshness badge** — live-ticking "just now / 8s ago / 2m ago" so you always know how stale the number is.
 - **Token + dollar toggle** — switch every card between tokens-first and dollars-first with one click.
@@ -141,6 +157,23 @@ That's it. No signup, no configuration, no telemetry. If you want to unlock API-
 - **Cache-aware math** — Anthropic's 5m/1h cache-write multipliers (1.25× / 2×) and cache-read discount (0.1×), OpenAI's cached-input rate, reasoning tokens priced as output — all handled correctly.
 - **Admin endpoints only** — API cards use the official org-level billing endpoints, not scraped estimates. If it shows up on your invoice, it shows up here.
 - **Dedup by message ID** — local log files can overlap across sessions; Tokenly dedupes so you never double-count a turn.
+
+### Per-project cost grouping
+
+Every Claude Code, Codex, and Gemini CLI card has a **Model | Project** toggle in the breakdown header. "Project" shows your top working directories sorted by tokens — the friendly basename on the left ("api-platform"), the full path in the hover tooltip, and a subtitle line with the top model, request count, session count, and source mix (CLI vs Desktop).
+
+Works because Claude Code, Claude Desktop, Codex CLI, Codex Desktop, and Gemini CLI all write the working directory into their local logs. Tokenly already iterates every line; we just bucket by `cwd` alongside the existing per-model bucketing. Choice persists per card.
+
+### Compare ranges (period-over-period)
+
+A small **vs prior** toggle next to the range picker doubles the fetch window so each card splits current vs prior and shows a delta pill on the primary number:
+
+- ↑ green when current usage is higher than the prior equal-length period
+- ↓ red when lower
+- · amber when about even (within ±0.5%)
+- `NEW` badge when there's no prior-period activity yet to compare against
+
+The trend sparkline also splits — prior half rendered dimmed, current half bright, with a subtle vertical divider at the midpoint.
 
 ### Budget alerts *(Tokenly Max)*
 
@@ -166,11 +199,14 @@ That's it. No signup, no configuration, no telemetry. If you want to unlock API-
 
 ### Power-user touches
 
-- **OpenRouter remaining-balance strip** — green ⚡ bar on the OpenRouter card showing `$X of $Y left`.
-- **Codex rate-limit quota strip** — `5h 32% / 7d 67% / team` pulled live from Codex's rollout events.
+- **OpenRouter info strip** — green ⚡ bar showing account balance (`$X of $Y left`), per-API-key spend cap when configured, and rate-limit info on hover.
+- **Subscription quota block** — brand-themed progress bars on each Claude / Codex / Gemini card with reset countdowns ("Resets in 3h 17m"). Bars stay subtle until usage warms up; turn amber > 80% and red on actual overage.
 - **Tray source + period selector** — pick which single provider (or "All") and which period ("Today", "Last 7d", etc.) feeds the menu-bar counter.
 - **Logo / monogram badge toggle** — in Settings → Appearance, swap brand SVG logos for colored initials. Your call.
+- **Launch at login** — Settings toggle. Opens silently on macOS sign-in (tray icon only, no popover flying open).
 - **Auto-update** — every installed Tokenly ≥ 1.2.1 polls GitHub Releases every 4 hours, downloads silently, prompts to install. No reinstalls, no reconfiguration.
+- **What's new in-app** — Settings → "What's new" pulls release notes live from GitHub. After every auto-update, a one-shot banner above the cards points you to the new sheet so you never miss what changed.
+- **Self-healing OAuth** — the subscription-quota path automatically refreshes Claude / Codex / Gemini OAuth tokens against each provider's official OAuth endpoint, persists rotated refresh tokens back to Keychain (Claude) or `auth.json` / `oauth_creds.json` (Codex, Gemini), and never asks you to re-run the CLI to renew.
 
 ---
 
@@ -211,7 +247,7 @@ Three independent pieces, intentionally decoupled:
                                         • gemini     → read JSON sessions
                                         • openai     → /v1/organization/usage
                                         • anthropic  → /v1/organizations/usage_report
-                                        • openrouter → /api/v1/activity + /credits
+                                        • openrouter → /api/v1/activity + /credits + /key
                                  │
                                  ▼
                Results cached 8s in-memory; concurrent requests coalesced
@@ -321,7 +357,9 @@ No. If you don't use Claude Code, Codex, or Gemini CLI, those cards just stay em
 No — the usage/cost endpoints require **admin**-scoped keys. For OpenAI that's `sk-admin-…`; for Anthropic it's `sk-ant-admin-…`. OpenRouter requires a management key. Project keys will return 403 and Tokenly will tell you so in the card.
 
 **I'm on a ChatGPT or Claude Max subscription. Does this show my subscription usage?**
-**Claude**: yes, via the Claude Code / Claude Desktop card (both write to `~/.claude/projects/`). **ChatGPT**: the desktop app encrypts local conversations at rest since mid-2024, so local extraction isn't possible. Codex CLI/Desktop usage *is* tracked.
+Yes — twice over. The local-tool cards show every token your CLI / Desktop app has produced. On top of that, the new **Live subscription quotas** layer reads your CLI's existing OAuth credentials and shows your *real* plan quota (5h / 7d / Opus / overage cap for Claude Max; 5h / 7d / credits balance for ChatGPT Pro / Plus / Team / Business; per-model-family quota for Gemini Free / Paid / Workspace). No extra setup — if you've signed into the CLI on this Mac, Tokenly picks it up.
+
+For the consumer ChatGPT desktop app specifically: it encrypts local conversations at rest since mid-2024, so local extraction isn't possible there. Codex CLI / Desktop usage *is* tracked, and the OAuth quota pulls your ChatGPT plan window directly.
 
 **What about Cursor, Windsurf, Antigravity?**
 Not supported. Cursor's local SQLite is opaque and their own dashboard is authoritative. Antigravity syncs state to Google's servers and leaves nothing locally parseable. If any of them expose a public consumer usage API, that would change.

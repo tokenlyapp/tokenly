@@ -8,13 +8,20 @@ This document is the complete build record. Read it before making architectural 
 
 ## 0. Current state (session handoff)
 
-**Current shipped version:** `1.9.0` — on GitHub Releases + Netlify Blobs. Auto-update pipeline live.
+**Current shipped version:** `1.11.0` — on GitHub Releases + Netlify Blobs. Auto-update pipeline live.
 
 **What's working in production:**
 - Six providers tracked (3 local-file, 3 admin-API)
+- Live OAuth subscription quotas on the three local cards (Claude Pro/Max, ChatGPT Pro/Plus/Team/Business, Gemini Free/Paid/Workspace) — read from each CLI's existing OAuth credentials, brand-themed bars with reset countdowns, fully self-healing token refresh
+- Per-project cost grouping on Claude Code / Codex / Gemini CLI (Model | Project toggle)
+- Compare ranges (period-over-period) — `vs prior` toggle adds delta pills + split sparklines
+- Provider status pills on OpenAI / Anthropic cards (Statuspage.io polling, 5-min cache)
+- OpenRouter card surfaces account balance + per-key spend cap + rate-limit info
 - Buy flow: Stripe Payment Link → /thank-you.html → Edge Function streams DMG from Netlify Blobs
 - Recovery flow: /recover page takes email → edge function finds Stripe session → Resend emails download link via Gmail-forwarded support@trytokenly.app
 - Auto-update: every installed Tokenly ≥ 1.2.1 polls `https://github.com/tokenlyapp/tokenly/releases/download/latest-mac.yml` every 4h, downloads silently, prompts to install
+- "What's new" in-app changelog (Settings entry + post-update banner pulling release notes live from GitHub)
+- Launch at login toggle in Settings (`openAsHidden` so the popover doesn't fly open)
 - Menu-bar live token display with per-provider source selector + period toggle
 - Analytics view with KPIs, stacked-area / stacked-bar / projection charts, and per-chart PDF + PNG export
 - CSV / JSON export of the current window — daily trend, provider totals, or per-model breakdown
@@ -29,8 +36,25 @@ This document is the complete build record. Read it before making architectural 
 **Resolved investigations:**
 - Antigravity: confirmed not locally parseable (cloud-only state sync). Closed.
 - Cursor: declined on scope (opaque sqlite blobs, client-side billing data unreliable). Closed.
+- Perplexity: deferred until they ship a public usage API. Currently the only path is browser-cookie scraping, which conflicts with our principle against scraping consumer web sessions.
 
-**Shipped since last handoff (1.9.0):**
+**Shipped in 1.11.0 (current handoff):**
+- **Per-project cost grouping** on Claude Code, Codex, and Gemini CLI cards. New "Model | Project" toggle in the breakdown header (persisted per card via localStorage). Top 12 projects sorted by tokens, with friendly basename (e.g. "api-platform"), full-path tooltip, top model, request count, session count, and source mix (`claude-cli` vs `claude-desktop`, `codex_cli` vs `Codex Desktop`). Implementation: each fetcher now builds a `byProject: [{ cwd, project, input, output, ..., requests, sessions, models, entrypoints/originators }]` map alongside the existing `byModel` aggregator, using `cwd` from event lines (Claude) or `session_meta.payload.cwd` (Codex) or the per-project folder slug (Gemini).
+- **Compare ranges (period-over-period)** — `vs prior` toggle next to the range picker doubles the fetch window. ProviderCard renders a `computeCompareSplit(data, compareWindowDays)` that calendar-splits `dailyBreakdown` by `now - compareWindowDays * 86400 * 1000` and emits current/prior totals + delta percentages. Delta pill on every primary number: ↑ green (more usage = engagement signal — verified-with-user color semantic), ↓ red (less), · amber (flat ±0.5%), `NEW` (no prior data). Trend chart dims the prior half + draws a thin midpoint divider.
+- **OAuth refresh + persistence** for all three quota providers:
+  - **Claude** — `POST https://platform.claude.com/v1/oauth/token` with public client_id `9d1c250a-e61b-44d9-88ed-5944d1962f5e`. **Single-use refresh tokens — Anthropic rotates on every refresh**, so `persistClaudeCredentials` writes the rotated refresh_token back to whichever source it loaded from (Keychain via `security add-generic-password -U`, or `~/.claude/.credentials.json` via atomic write). Without persistence we got a single-use trap that took an in-session test to discover (see `memory/anthropic_refresh_rotates.md`).
+  - **Codex** — `POST https://auth.openai.com/oauth/token` with public client_id `app_EMoamEEZ73f0CkXaXp7hrann`. May or may not rotate refresh_token; defensive `persistCodexCredentials` writes back to `~/.codex/auth.json` (atomic) and bumps `last_refresh` so the Codex CLI won't double-refresh.
+  - **Gemini** — already shipped in 1.10.x; no changes.
+- **Reset countdowns** under each quota bar (`fmtResetIn(isoString)` → "Resets in 3h 17m" / "Resets in 2d 4h"). Hides on missing or past timestamps.
+- **Launch at login** Settings toggle. `app.setLoginItemSettings({ openAtLogin, openAsHidden: true })` so the menu bar icon appears but no popover flies open. macOS-only — gracefully hidden on other platforms.
+- **What's new in-app changelog** — new `ChangelogSheet.jsx` reached from Settings → "What's new" + a post-update banner above the cards. `changelog:get` IPC fetches `api.github.com/repos/tokenlyapp/tokenly/releases?per_page=20` (1h in-memory cache + last-known fallback). Post-update banner triggers when `appVersion !== lastSeenVersion` in localStorage; brand-new installs auto-seed `lastSeenVersion` so first launch doesn't show "Updated to vX". Inline markdown subset renderer for headers / bold / inline code / links / bullets / blockquotes — zero new deps.
+
+**Shipped in 1.10.x:**
+- **Live OAuth subscription quotas** for Claude / Codex / Gemini — reads existing CLI tokens, calls private quota endpoints (`api.anthropic.com/api/oauth/usage`, `chatgpt.com/backend-api/wham/usage`, `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`), renders a brand-themed quota block per card with 5h/7d/Opus bars, credits, plan tier. Anthropic returns money in **cents** + `utilization` as **0–100 not 0–1** (see memory entries). Free-tier Gemini Pro buckets are filtered out (resetTime epoch + remainingFraction 0 means "not entitled" not "100% used").
+- **Provider status pills** on OpenAI / Anthropic cards (5-min cache, click-through to status page, animated pulse for `major`/`critical`).
+- **OpenRouter `/api/v1/key` enrichment** — adds per-key spend cap + `rate_limit` info to the existing balance strip. 1s timeout so a slow `/key` doesn't block credits/activity.
+
+**Shipped in 1.9.0 (recap):**
 - **Analytics view** (Max-only) — new full-screen sheet reached from a gold chart icon in the popover header. KPI tiles, stacked-area token-value / token-volume over time, stacked-bar tokens-by-category, top-models horizontal bar, and a 30-day linear-regression projection with past/future split. Token value / Tokens tab toggle flips every chart's metric. Full-name provider filter chips. Range picker mirrors the popover's window selector.
 - **CSV / JSON export** (Max-only) — new Export sheet under Settings with a live preview. Three datasets: Daily trend, Provider totals, Model breakdown. Format toggle (CSV / JSON). Copy to clipboard or Save to file via native dialog.
 - **Per-chart + bundle PNG export** — gold download button on every Analytics chart renders that card in an isolated hidden BrowserWindow (measured content size, `document.fonts.ready`, 2× retina) and returns a PNG via `webContents.capturePage`. Bundle export dumps all charts into a user-chosen folder.
@@ -181,21 +205,23 @@ LLM Usage Dash/
 
 Sources are grouped into **Local tools** (read from disk, capture subscription-bundled usage) and **API billing** (read from provider admin endpoints, capture pay-as-you-go charges). The Settings dropdown groups them visually.
 
-**Local tools (keyless, real-time):**
+**Local tools (keyless, real-time) — also fetch live OAuth subscription quotas in parallel since 1.10.x:**
 
-| Provider | Display Name | Source | Shape | Notes |
+| Provider | Display Name | Local source | Quota OAuth path (1.10+) | Notes |
 |---|---|---|---|---|
-| `claude-code` | **Claude Code** | Streams `~/.claude/projects/**/*.jsonl` via `readline` | Each line is a JSON event; keep only `type: "assistant"` with `message.usage` | Covers both **Claude Code CLI and Claude Desktop app** (shared folder). Dedups by `message.id`. **Streaming required** — conversation files can exceed V8's string limit. |
-| `codex` | **Codex CLI** | Streams `~/.codex/sessions/**/*.jsonl` and `archived_sessions/` | Tracks `currentModel` from `turn_context` events; reads `event_msg.payload.type === "token_count"` for `last_token_usage` | Covers both **Codex CLI and Codex Desktop** (both write to `sessions/`). Dedups by `session_meta.payload.id`. **The `logs_2.sqlite` was a dead end** — OTel buffer captures only ~1% of real usage. Rollout JSONL is the source of truth. Also exposes `rate_limits` block → feeds the "5h window / 7d / team" quota strip on the card. |
-| `gemini-cli` | **Gemini CLI** | Reads `~/.gemini/tmp/<project_hash>/chats/*.json` | Each file is one session; `messages[]` contains turns with `type: "gemini"` having a clean `tokens: { input, output, cached, thoughts, tool, total }` block | Only Gemini CLI — no Gemini Desktop tool persists locally. Cleanest per-turn schema of any provider. `thoughts` = reasoning tokens (priced as output). `tool` = tool-call context (priced as input). Dedups by `msg.id`. |
+| `claude-code` | **Claude Code** | Streams `~/.claude/projects/**/*.jsonl` via `readline`. Captures `cwd` per file for the per-project view. | `~/.claude/.credentials.json` or Keychain `Claude Code-credentials` → `GET https://api.anthropic.com/api/oauth/usage` (beta header `oauth-2025-04-20`). Returns `five_hour`, `seven_day`, `seven_day_opus`, `extra_usage` (utilization 0–100, money in cents). Refresh against `platform.claude.com/v1/oauth/token` with single-use rotation — persistence MANDATORY. | Covers Claude Code CLI + Claude Desktop (shared folder). Dedups by `message.id`. Per-project bucketing keyed on `cwd` from event lines; falls back to decoding the encoded folder name. Source mix surfaced via `entrypoint` field (`claude-cli` vs `claude-desktop`). |
+| `codex` | **Codex CLI** | Streams `~/.codex/sessions/**/*.jsonl` + `archived_sessions/`. Captures `cwd`/`originator` from `session_meta` for per-project view. | `~/.codex/auth.json` → `GET https://chatgpt.com/backend-api/wham/usage` (UA `codex-cli`, `ChatGPT-Account-Id` header). Returns `plan_type`, `rate_limit.{primary,secondary}_window`, `credits`. JWT exp parsed locally; refresh via `auth.openai.com/oauth/token` with defensive write-back to `auth.json` (atomic + bumps `last_refresh`). | Covers Codex CLI + Codex Desktop. Dedups by `session_meta.payload.id`. `logs_2.sqlite` is a dead end. Source mix from `originator` (`codex_cli` vs `Codex Desktop`). The legacy rollout `rate_limits` strip is suppressed when OAuth `quota` is present (OAuth is authoritative). |
+| `gemini-cli` | **Gemini CLI** | Reads `~/.gemini/tmp/<project_slug>/chats/*.json`. Folder slug = project for the per-project view. | `~/.gemini/oauth_creds.json` → `POST cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` for tier + project + `:retrieveUserQuota` for per-model buckets. OAuth client_id/secret extracted at runtime from the installed gemini-cli bundle (`/opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/*.js`); refresh via `oauth2.googleapis.com/token` with atomic write-back to `oauth_creds.json`. | Cleanest per-turn schema. `thoughts` = reasoning (priced as output), `tool` = tool context (priced as input). Pro buckets with `remainingFraction === 0` AND `resetTime: 1970-01-01T00:00:00Z` mean "not entitled" not "100% used" — filtered out. |
 
 **API billing (keyed, polls every 30–60s):**
 
 | Provider | Display Name | Source | Shape | Notes |
 |---|---|---|---|---|
-| `openai` | **OpenAI API** | `GET /v1/organization/usage/completions` + `/v1/organization/costs` | Paginated (max 31 buckets/page); totals from `/costs` grouped by `line_item` | Requires **Admin API key** (`sk-admin-…`). Regular project keys 403. Costs in **dollars** as `amount.value` string. |
-| `anthropic` | **Anthropic API** | `GET /v1/organizations/usage_report/messages` + `/cost_report` | Paginated; amounts returned as plain strings on `amount` (not nested `.value`) | Requires **Admin Key** (`sk-ant-admin…`). **Amount is in CENTS**, not dollars — must divide by 100. |
-| `openrouter` | **OpenRouter** | `GET /api/v1/activity` + `GET /api/v1/credits` | Activity: per-day, per-model rows with `usage` (USD), `prompt_tokens`, `completion_tokens`, `reasoning_tokens`. Credits: `total_credits` - `total_usage` = remaining balance. | Requires **Management key** (not a regular API key). Activity aggregates by completed UTC day. The `/credits` call surfaces remaining balance in the green "⚡ Balance $X of $Y" strip on the card. |
+| `openai` | **OpenAI API** | `GET /v1/organization/usage/completions` + `/v1/organization/costs` | Paginated (max 31 buckets/page); totals from `/costs` grouped by `line_item` | Requires **Admin API key** (`sk-admin-…`). Regular project keys 403. Costs in **dollars** as `amount.value` string. Card shows status pill from `status.openai.com/api/v2/status.json` (5min cache). |
+| `anthropic` | **Anthropic API** | `GET /v1/organizations/usage_report/messages` + `/cost_report` | Paginated; amounts returned as plain strings on `amount` (not nested `.value`) | Requires **Admin Key** (`sk-ant-admin…`). **Amount is in CENTS**, not dollars — must divide by 100. Card shows status pill from `status.anthropic.com/api/v2/status.json` (5min cache). |
+| `openrouter` | **OpenRouter** | `GET /api/v1/activity` + `GET /api/v1/credits` + `GET /api/v1/key` (1s timeout, non-blocking) | Activity: per-day, per-model rows with `usage` (USD), `prompt_tokens`, `completion_tokens`, `reasoning_tokens`. Credits: `total_credits` - `total_usage` = remaining balance. Key: per-API-key `limit`/`usage` (spend cap) + `rate_limit { requests, interval }`. | Requires **Management key** (not a regular API key). Activity aggregates by completed UTC day. The `/credits` call surfaces remaining balance in the green "⚡ Balance $X of $Y" strip; `/key` adds "Key cap $X of $Y" + rate-limit tooltip. |
+
+**Compare-ranges helper (1.11.0):** `computeCompareSplit(data, compareWindowDays)` in `app/components/ProviderCard.jsx` calendar-splits `dailyBreakdown` at `now - compareWindowDays * 86400 * 1000` to derive current/prior totals + delta percentages. Renderer fetches `days * 2` when compare is on; trend chart visualizes both halves with the prior dimmed.
 
 ### Local-source token-value calculation
 
