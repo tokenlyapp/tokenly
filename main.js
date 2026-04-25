@@ -413,6 +413,67 @@ ipcMain.handle('usage:fetch', async (_e, provider, rangeDays) => {
 
 ipcMain.handle('open-external', (_e, url) => shell.openExternal(url));
 
+// Launch-at-login. macOS-only; falls back gracefully on other platforms so
+// the renderer can render a disabled toggle without special-casing.
+ipcMain.handle('prefs:launch-at-login:get', () => {
+  if (process.platform !== 'darwin') return { supported: false, enabled: false };
+  try {
+    const s = app.getLoginItemSettings();
+    return { supported: true, enabled: !!s.openAtLogin };
+  } catch { return { supported: true, enabled: false }; }
+});
+ipcMain.handle('app:version', () => {
+  try { return app.getVersion(); } catch { return null; }
+});
+
+// In-memory changelog cache (1h TTL). Falls back to last-known on network
+// failures so the sheet always renders something.
+let changelogCache = null;
+ipcMain.handle('changelog:get', async () => {
+  const TTL_MS = 60 * 60 * 1000;
+  if (changelogCache && Date.now() - changelogCache.fetchedAt < TTL_MS) return changelogCache.data;
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 8000);
+  let res;
+  try {
+    res = await fetch('https://api.github.com/repos/tokenlyapp/tokenly/releases?per_page=20', {
+      headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'tokenly/' + app.getVersion() },
+      signal: ctrl.signal,
+    });
+  } catch { clearTimeout(timeout); return changelogCache ? changelogCache.data : []; }
+  clearTimeout(timeout);
+  if (!res || !res.ok) return changelogCache ? changelogCache.data : [];
+  let body;
+  try { body = await res.json(); } catch { return changelogCache ? changelogCache.data : []; }
+  if (!Array.isArray(body)) return changelogCache ? changelogCache.data : [];
+  const data = body
+    .filter((r) => !r.draft)
+    .map((r) => ({
+      version: String(r.tag_name || '').replace(/^v/, ''),
+      tag: r.tag_name,
+      title: r.name || r.tag_name,
+      body: r.body || '',
+      publishedAt: r.published_at,
+      url: r.html_url,
+      prerelease: !!r.prerelease,
+    }));
+  changelogCache = { fetchedAt: Date.now(), data };
+  return data;
+});
+
+ipcMain.handle('prefs:launch-at-login:set', (_e, enabled) => {
+  if (process.platform !== 'darwin') return { supported: false, enabled: false };
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: !!enabled,
+      // Open hidden so the popover doesn't fly open in the user's face
+      // immediately on every login. Tray icon still appears.
+      openAsHidden: true,
+    });
+    return { supported: true, enabled: !!enabled };
+  } catch { return { supported: true, enabled: false }; }
+});
+
 // Render an HTML string to a PDF via a hidden BrowserWindow + printToPDF,
 // then prompt for a save location. Used by the Analytics "Export report"
 // button for the flagship PDF report. Zero new deps — Chromium does the
@@ -1566,6 +1627,25 @@ function costFromUsage(model, u) {
   return input + output + cacheCreation + cacheRead;
 }
 
+// Decode the encoded folder names Claude writes under ~/.claude/projects/ —
+// e.g. "-Users-adowney-Documents-LLM-Usage-Dash" → "/Users/adowney/Documents/LLM Usage Dash".
+// Best-effort: ambiguous when a real folder name contains a hyphen (we can't
+// distinguish hyphen-as-separator from hyphen-as-literal). The embedded `cwd`
+// field on event lines is preferred when present; this is just the fallback.
+function decodeClaudeProjectFolder(name) {
+  if (!name || typeof name !== 'string') return null;
+  if (!name.startsWith('-')) return null;
+  return name.replace(/-/g, '/');
+}
+
+// Project label = last meaningful path segment. "/Users/x/Documents/Mikey" → "Mikey".
+// Falls back to the full path when basename is empty (root, etc).
+function friendlyProjectName(cwd) {
+  if (!cwd || typeof cwd !== 'string') return '(unknown)';
+  const base = path.basename(cwd);
+  return base || cwd;
+}
+
 function* walkJsonlFiles(dir) {
   let entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
@@ -1587,6 +1667,111 @@ function* walkJsonlFiles(dir) {
 
 const CLAUDE_CREDENTIALS_FILE = path.join(os.homedir(), '.claude', '.credentials.json');
 const CLAUDE_KEYCHAIN_SERVICE = 'Claude Code-credentials';
+const CLAUDE_OAUTH_REFRESH_URL = 'https://platform.claude.com/v1/oauth/token';
+// Public OAuth client ID shipped with the open-source Claude Code CLI.
+// Used only for refresh-token grants — no client secret needed (PKCE public client).
+const CLAUDE_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+
+// In-memory cache of refreshed Claude tokens keyed by the underlying refresh
+// token. Anthropic ROTATES refresh tokens on every refresh (single-use OAuth
+// security), so we MUST persist the new refresh token back to the Keychain
+// or the next process launch will be stuck with an invalid refresh_token.
+const claudeRefreshedTokenCache = new Map();
+
+// Returns the macOS Keychain account name for the "Claude Code-credentials"
+// item by parsing `security find-generic-password -g` output, or null if the
+// item isn't present.
+function findClaudeKeychainAccount() {
+  if (process.platform !== 'darwin') return null;
+  const { execFileSync } = require('child_process');
+  try {
+    const out = execFileSync('/usr/bin/security',
+      ['find-generic-password', '-s', CLAUDE_KEYCHAIN_SERVICE, '-g'],
+      { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+    const m = out.match(/"acct"<blob>="([^"]*)"/);
+    return m ? m[1] : null;
+  } catch {
+    // -g writes the password to stderr but exits 0; on failure we get a non-zero exit.
+    return null;
+  }
+}
+
+// Persist refreshed credentials. Writes to whichever source loaded them
+// (file or Keychain). Best-effort — failures are logged silently because the
+// in-memory cache still serves the running session.
+function persistClaudeCredentials(originalRaw, source, refreshed, originalParsed) {
+  if (!refreshed || !refreshed.refreshToken || !refreshed.accessToken) return;
+  let jsonObj;
+  try { jsonObj = JSON.parse(originalRaw); } catch { jsonObj = {}; }
+  const oa = jsonObj.claudeAiOauth || {};
+  // Preserve every field on the original oa block; only update the rotating ones.
+  oa.accessToken  = refreshed.accessToken;
+  oa.refreshToken = refreshed.refreshToken;
+  oa.expiresAt    = refreshed.expiresAtMs;
+  if (refreshed.scopes && refreshed.scopes.length) oa.scopes = refreshed.scopes;
+  jsonObj.claudeAiOauth = oa;
+  const next = JSON.stringify(jsonObj);
+
+  if (source === 'file') {
+    try {
+      const tmp = CLAUDE_CREDENTIALS_FILE + '.tokenly.tmp';
+      fs.writeFileSync(tmp, next, { mode: 0o600 });
+      fs.renameSync(tmp, CLAUDE_CREDENTIALS_FILE);
+    } catch { /* non-fatal */ }
+    return;
+  }
+  if (source === 'keychain' && process.platform === 'darwin') {
+    const account = findClaudeKeychainAccount();
+    if (!account) return;
+    const { execFileSync } = require('child_process');
+    try {
+      // -U updates if the (service, account) tuple already exists.
+      execFileSync('/usr/bin/security',
+        ['add-generic-password', '-U',
+         '-s', CLAUDE_KEYCHAIN_SERVICE,
+         '-a', account,
+         '-w', next],
+        { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch { /* non-fatal — first write may need user to grant Keychain access */ }
+  }
+}
+
+async function refreshClaudeOAuthToken(creds) {
+  if (!creds || !creds.refreshToken) return null;
+  const cached = claudeRefreshedTokenCache.get(creds.refreshToken);
+  if (cached && cached.expiresAtMs - Date.now() > 60_000) return cached;
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: creds.refreshToken,
+    client_id: CLAUDE_OAUTH_CLIENT_ID,
+  });
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 8000);
+  let res;
+  try {
+    res = await fetch(CLAUDE_OAUTH_REFRESH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+      body: body.toString(),
+      signal: ctrl.signal,
+    });
+  } catch { clearTimeout(timeout); return null; }
+  clearTimeout(timeout);
+  if (!res || !res.ok) return null;
+  let json;
+  try { json = await res.json(); } catch { return null; }
+  if (!json.access_token) return null;
+  const next = {
+    accessToken: json.access_token,
+    refreshToken: json.refresh_token || creds.refreshToken,
+    expiresAtMs: Date.now() + ((Number(json.expires_in) || 28800) * 1000),
+    scopes: Array.isArray(json.scope) ? json.scope
+      : (typeof json.scope === 'string' ? json.scope.split(/\s+/).filter(Boolean) : creds.scopes),
+    rateLimitTier: creds.rateLimitTier,
+  };
+  claudeRefreshedTokenCache.set(creds.refreshToken, next);
+  return next;
+}
 
 function parseClaudeCredentials(raw) {
   if (!raw) return null;
@@ -1609,23 +1794,23 @@ function parseClaudeCredentials(raw) {
 function readClaudeCredentialsFromFile() {
   try {
     if (!fs.existsSync(CLAUDE_CREDENTIALS_FILE)) return null;
-    return parseClaudeCredentials(fs.readFileSync(CLAUDE_CREDENTIALS_FILE, 'utf8'));
+    const raw = fs.readFileSync(CLAUDE_CREDENTIALS_FILE, 'utf8');
+    const parsed = parseClaudeCredentials(raw);
+    return parsed ? { creds: parsed, raw, source: 'file' } : null;
   } catch { return null; }
 }
 
 function readClaudeCredentialsFromKeychain() {
   if (process.platform !== 'darwin') return null;
-  // Shell out to /usr/bin/security so we don't need a native keytar dep.
-  // The first call may trigger a macOS Keychain ACL prompt; user can grant
-  // "Always Allow" to suppress on subsequent runs.
   const { execFileSync } = require('child_process');
   try {
-    const out = execFileSync(
+    const raw = execFileSync(
       '/usr/bin/security',
       ['find-generic-password', '-s', CLAUDE_KEYCHAIN_SERVICE, '-w'],
       { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] },
     );
-    return parseClaudeCredentials(out);
+    const parsed = parseClaudeCredentials(raw);
+    return parsed ? { creds: parsed, raw, source: 'keychain' } : null;
   } catch { return null; }
 }
 
@@ -1662,9 +1847,24 @@ function mapOAuthWindow(win) {
 }
 
 async function fetchClaudeOAuthQuota() {
-  const creds = loadClaudeOAuthCredentials();
-  if (!creds) return null;
-  if (creds.expiresAtMs && Date.now() >= creds.expiresAtMs) return null;
+  const loaded = loadClaudeOAuthCredentials();
+  if (!loaded) return null;
+  let creds = loaded.creds;
+  // Refresh if expiring within 60s. Falls back to the stale token if refresh
+  // fails (still might work for a few seconds), and bails entirely if the
+  // refresh fails AND the token is already past its expiry.
+  // CRITICAL: Anthropic rotates refresh_token on every refresh — we MUST
+  // persist the new credentials back to Keychain/file or the next process
+  // launch will be stuck with an invalidated refresh_token.
+  if (creds.expiresAtMs && (creds.expiresAtMs - Date.now() < 60_000)) {
+    const refreshed = await refreshClaudeOAuthToken(creds);
+    if (refreshed) {
+      creds = { ...creds, ...refreshed };
+      persistClaudeCredentials(loaded.raw, loaded.source, refreshed, loaded.creds);
+    } else if (Date.now() >= creds.expiresAtMs) {
+      return null;
+    }
+  }
   // The /api/oauth/usage endpoint requires user:profile scope (CLI tokens
   // with only user:inference cannot call it).
   if (creds.scopes.length && !creds.scopes.includes('user:profile')) return null;
@@ -1738,6 +1938,66 @@ async function fetchClaudeOAuthQuota() {
 
 const CODEX_AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json');
 const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
+const CODEX_OAUTH_REFRESH_URL = 'https://auth.openai.com/oauth/token';
+// Public OAuth client ID baked into the open-source Codex CLI.
+const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
+
+// In-memory cache of refreshed Codex tokens — same shape as the Claude one.
+const codexRefreshedTokenCache = new Map(); // refresh_token → { accessToken, expiresAtMs, accountId, idToken, refreshToken }
+
+async function refreshCodexOAuthToken(creds) {
+  if (!creds || !creds.refreshToken) return null;
+  const cached = codexRefreshedTokenCache.get(creds.refreshToken);
+  if (cached && cached.expiresAtMs - Date.now() > 5 * 60_000) return cached;
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 8000);
+  let res;
+  try {
+    res = await fetch(CODEX_OAUTH_REFRESH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({
+        client_id: CODEX_OAUTH_CLIENT_ID,
+        grant_type: 'refresh_token',
+        refresh_token: creds.refreshToken,
+        scope: 'openid profile email',
+      }),
+      signal: ctrl.signal,
+    });
+  } catch { clearTimeout(timeout); return null; }
+  clearTimeout(timeout);
+  if (!res || !res.ok) return null;
+  let json;
+  try { json = await res.json(); } catch { return null; }
+  if (!json.access_token) return null;
+  // JWT exp claim → expiresAtMs. Falls back to 8 days if the JWT isn't parseable.
+  let expMs = Date.now() + 8 * 24 * 3600_000;
+  try {
+    const parts = String(json.access_token).split('.');
+    const payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    if (typeof payload.exp === 'number') expMs = payload.exp * 1000;
+  } catch { /* keep fallback */ }
+  const next = {
+    accessToken: json.access_token,
+    refreshToken: json.refresh_token || creds.refreshToken,
+    idToken: json.id_token || creds.idToken,
+    accountId: creds.accountId,
+    expiresAtMs: expMs,
+  };
+  codexRefreshedTokenCache.set(creds.refreshToken, next);
+  return next;
+}
+
+// Returns ms until JWT exp, or 0 if unparseable / no exp claim.
+function jwtMsUntilExpiry(jwt) {
+  try {
+    const parts = String(jwt).split('.');
+    if (parts.length < 2) return 0;
+    const payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    if (typeof payload.exp !== 'number') return 0;
+    return payload.exp * 1000 - Date.now();
+  } catch { return 0; }
+}
 
 function readCodexAuth() {
   try {
@@ -1749,12 +2009,36 @@ function readCodexAuth() {
     const accessToken = String(tokens.access_token || '').trim();
     if (!accessToken) return null;
     return {
-      accessToken,
-      accountId: tokens.account_id || null,
-      idToken: tokens.id_token || null,
-      lastRefresh: json.last_refresh || null,
+      creds: {
+        accessToken,
+        refreshToken: tokens.refresh_token || null,
+        accountId: tokens.account_id || null,
+        idToken: tokens.id_token || null,
+        lastRefresh: json.last_refresh || null,
+      },
+      raw, // full original file contents — preserved for write-back
     };
   } catch { return null; }
+}
+
+// Persist refreshed Codex credentials. OpenAI's refresh response MAY rotate
+// refresh_token (OAuth allows it either way) — write back defensively to
+// avoid the same single-use trap Anthropic has. Updates last_refresh so the
+// codex CLI sees the file as fresh and skips its own redundant refresh.
+function persistCodexCredentials(originalRaw, refreshed) {
+  if (!refreshed || !refreshed.accessToken) return;
+  let json;
+  try { json = JSON.parse(originalRaw); } catch { return; }
+  if (!json.tokens) json.tokens = {};
+  json.tokens.access_token  = refreshed.accessToken;
+  json.tokens.refresh_token = refreshed.refreshToken;
+  if (refreshed.idToken) json.tokens.id_token = refreshed.idToken;
+  json.last_refresh = new Date().toISOString();
+  try {
+    const tmp = CODEX_AUTH_FILE + '.tokenly.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(json, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, CODEX_AUTH_FILE);
+  } catch { /* non-fatal — in-memory cache still serves the running session */ }
 }
 
 // JWT exp claim is in seconds since epoch. Returns true if the token is
@@ -1808,9 +2092,22 @@ function mapCodexWindow(win) {
 }
 
 async function fetchCodexOAuthQuota() {
-  const creds = readCodexAuth();
-  if (!creds) return null;
-  if (isJwtExpired(creds.accessToken)) return null;
+  const loaded = readCodexAuth();
+  if (!loaded) return null;
+  let creds = loaded.creds;
+  // Refresh proactively when the JWT is within 5 min of expiry, OR if it's
+  // already expired. Falls back to the stale token if refresh fails AND the
+  // token isn't fully expired yet (still might work briefly).
+  const msLeft = jwtMsUntilExpiry(creds.accessToken);
+  if (msLeft < 5 * 60_000) {
+    const refreshed = await refreshCodexOAuthToken(creds);
+    if (refreshed) {
+      creds = { ...creds, accessToken: refreshed.accessToken, idToken: refreshed.idToken, refreshToken: refreshed.refreshToken };
+      persistCodexCredentials(loaded.raw, refreshed);
+    } else if (msLeft <= 0) {
+      return null;
+    }
+  }
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 5000);
@@ -1866,6 +2163,7 @@ async function fetchClaudeCodeLocal(days) {
   const byModel = {};
   const byDay = new Map();
   const byDayDetail = new Map();
+  const byProject = new Map(); // cwd → aggregate
   const seenIds = new Set();
   let inTok = 0, outTok = 0, cacheIn = 0, cacheRead = 0, req = 0, totalCost = 0;
 
@@ -1877,6 +2175,13 @@ async function fetchClaudeCodeLocal(days) {
     if (stat.mtimeMs < cutoffMs) continue;
     if (stat.size > MAX_FILE_BYTES) continue;
 
+    // cwd / entrypoint are session-level facts captured from the first line
+    // that has them. Fall back to decoding the parent folder name (the encoded
+    // form Claude writes — leading "-", slashes replaced with "-").
+    let sessionCwd = null;
+    let sessionEntry = null;
+    let sessionContributed = false; // for byProject.sessions count
+
     try {
       const rl = readline.createInterface({
         input: fs.createReadStream(filepath, { encoding: 'utf8', highWaterMark: 64 * 1024 }),
@@ -1886,6 +2191,10 @@ async function fetchClaudeCodeLocal(days) {
         if (!line) continue;
         let o;
         try { o = JSON.parse(line); } catch { continue; }
+
+        if (!sessionCwd && typeof o.cwd === 'string' && o.cwd) sessionCwd = o.cwd;
+        if (!sessionEntry && typeof o.entrypoint === 'string') sessionEntry = o.entrypoint;
+
         if (o.type !== 'assistant' || !o.message || !o.message.usage) continue;
         const msgId = o.message.id;
         if (msgId && seenIds.has(msgId)) continue;
@@ -1925,6 +2234,31 @@ async function fetchClaudeCodeLocal(days) {
         det.requests       += 1;
         det.cost           += cost;
         byDayDetail.set(dayKey, det);
+
+        // Project bucket. Resolved lazily — we may not have seen cwd yet on
+        // this line, but in practice user/system events precede the first
+        // assistant turn so sessionCwd is populated by now.
+        const cwdKey = sessionCwd || decodeClaudeProjectFolder(path.basename(path.dirname(filepath))) || '(unknown)';
+        const proj = byProject.get(cwdKey) || {
+          cwd: cwdKey,
+          project: friendlyProjectName(cwdKey),
+          input: 0, output: 0, cache_creation: 0, cache_read: 0, requests: 0, cost: 0,
+          entrypoints: {},
+          modelsMap: new Map(),
+          sessions: 0,
+        };
+        proj.input          += u.input_tokens                || 0;
+        proj.output         += u.output_tokens               || 0;
+        proj.cache_creation += u.cache_creation_input_tokens || 0;
+        proj.cache_read     += u.cache_read_input_tokens     || 0;
+        proj.requests       += 1;
+        proj.cost           += cost;
+        if (sessionEntry) proj.entrypoints[sessionEntry] = (proj.entrypoints[sessionEntry] || 0) + 1;
+        const m = proj.modelsMap.get(model) || { model, requests: 0, cost: 0 };
+        m.requests += 1; m.cost += cost;
+        proj.modelsMap.set(model, m);
+        if (!sessionContributed) { proj.sessions += 1; sessionContributed = true; }
+        byProject.set(cwdKey, proj);
       }
     } catch { continue; }
   }
@@ -1933,10 +2267,17 @@ async function fetchClaudeCodeLocal(days) {
   const dailyBreakdown = [...byDayDetail.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, v]) => ({ date, ...v }));
+  const byProjectArr = [...byProject.values()]
+    .map(({ modelsMap, ...rest }) => ({
+      ...rest,
+      models: [...modelsMap.values()].sort((a, b) => b.cost - a.cost),
+    }))
+    .sort((a, b) => b.cost - a.cost);
 
   return {
     totals: { input: inTok, output: outTok, cache_creation: cacheIn, cache_read: cacheRead, requests: req, cost: totalCost, currency: 'USD' },
     models: Object.values(byModel).sort((a, b) => b.cost - a.cost),
+    byProject: byProjectArr,
     trend: sortedTrend,
     dailyBreakdown,
     windowDays: days,
@@ -2028,6 +2369,7 @@ async function fetchCodexLocal(days) {
   const byModel = {};
   const byDay = new Map();
   const byDayDetail = new Map();
+  const byProject = new Map(); // cwd → aggregate
   let inTok = 0, outTok = 0, cachedTok = 0, reasoningTok = 0, turns = 0;
   let totalCost = 0;
   const planTypes = new Map();
@@ -2049,6 +2391,9 @@ async function fetchCodexLocal(days) {
 
     let sessionId = null;
     let currentModel = 'unknown';
+    let sessionCwd = null;
+    let sessionOriginator = null;
+    let sessionContributed = false;
 
     // Stream line-by-line so we never hold more than one line of the file in memory.
     let sessionSkip = false;
@@ -2066,6 +2411,14 @@ async function fetchCodexLocal(days) {
           sessionId = o.payload.id;
           if (seenSessions.has(sessionId)) { sessionSkip = true; continue; }
           seenSessions.add(sessionId);
+          if (typeof o.payload.cwd === 'string') sessionCwd = o.payload.cwd;
+          if (typeof o.payload.originator === 'string') sessionOriginator = o.payload.originator;
+        }
+
+        // Some sessions also surface cwd later via turn_context — capture it
+        // as a fallback in case session_meta was malformed.
+        if (!sessionCwd && o.type === 'turn_context' && typeof o.payload?.cwd === 'string') {
+          sessionCwd = o.payload.cwd;
         }
 
         if (o.type === 'turn_context' && o.payload?.model) {
@@ -2119,6 +2472,29 @@ async function fetchCodexLocal(days) {
           det.requests  += 1;
           det.cost      += cost;
           byDayDetail.set(dayKey, det);
+
+          // Project bucket. cwd is captured from session_meta (line 1).
+          const cwdKey = sessionCwd || '(unknown)';
+          const proj = byProject.get(cwdKey) || {
+            cwd: cwdKey,
+            project: friendlyProjectName(cwdKey),
+            input: 0, output: 0, cached: 0, reasoning: 0, requests: 0, cost: 0,
+            originators: {},
+            modelsMap: new Map(),
+            sessions: 0,
+          };
+          proj.input     += inT;
+          proj.output    += outT;
+          proj.cached    += cachedT;
+          proj.reasoning += reasoningT;
+          proj.requests  += 1;
+          proj.cost      += cost;
+          if (sessionOriginator) proj.originators[sessionOriginator] = (proj.originators[sessionOriginator] || 0) + 1;
+          const m = proj.modelsMap.get(currentModel) || { model: currentModel, requests: 0, cost: 0 };
+          m.requests += 1; m.cost += cost;
+          proj.modelsMap.set(currentModel, m);
+          if (!sessionContributed) { proj.sessions += 1; sessionContributed = true; }
+          byProject.set(cwdKey, proj);
         }
       }
     } catch (err) {
@@ -2137,9 +2513,17 @@ async function fetchCodexLocal(days) {
     ? `Plan: ${planList.join(', ')}. Cost is a list-price estimate — most ChatGPT subscription usage is bundled and not billed per-token.`
     : 'Cost is an estimate based on public pricing.';
 
+  const byProjectArr = [...byProject.values()]
+    .map(({ modelsMap, ...rest }) => ({
+      ...rest,
+      models: [...modelsMap.values()].sort((a, b) => b.cost - a.cost),
+    }))
+    .sort((a, b) => b.cost - a.cost);
+
   return {
     totals: { input: inTok, output: outTok, cached: cachedTok, reasoning: reasoningTok, requests: turns, cost: totalCost, currency: 'USD' },
     models: Object.values(byModel).sort((a, b) => b.cost - a.cost),
+    byProject: byProjectArr,
     trend: sortedTrend,
     dailyBreakdown,
     windowDays: days,
@@ -2410,10 +2794,13 @@ async function fetchGeminiCLILocal(days) {
   const byModel = {};
   const byDay = new Map();
   const byDayDetail = new Map();
+  const byProject = new Map(); // slug → aggregate
   const seenIds = new Set();
   let inTok = 0, outTok = 0, cachedTok = 0, thoughtsTok = 0, toolTok = 0, req = 0, totalCost = 0;
 
-  // Each project has ~/.gemini/tmp/<hash>/chats/*.json — walk all of them.
+  // Each project has ~/.gemini/tmp/<slug>/chats/*.json — walk all of them.
+  // Gemini CLI uses a slug derived from the cwd as the folder name; in some
+  // versions it's a short slug ("rina-email-builder"), in others a hash.
   let projectDirs;
   try { projectDirs = fs.readdirSync(GEMINI_TMP_DIR, { withFileTypes: true }); } catch { projectDirs = []; }
 
@@ -2422,6 +2809,7 @@ async function fetchGeminiCLILocal(days) {
     const chatsDir = path.join(GEMINI_TMP_DIR, pd.name, 'chats');
     if (!fs.existsSync(chatsDir)) continue;
 
+    const projectSlug = pd.name;
     let sessFiles;
     try { sessFiles = fs.readdirSync(chatsDir); } catch { continue; }
     for (const fname of sessFiles) {
@@ -2438,6 +2826,7 @@ async function fetchGeminiCLILocal(days) {
       try { session = JSON.parse(content); } catch { continue; }
 
       const messages = Array.isArray(session.messages) ? session.messages : [];
+      let sessionContributed = false;
       for (const msg of messages) {
         if (msg.type !== 'gemini') continue;        // only assistant turns have token data
         if (!msg.tokens) continue;
@@ -2481,6 +2870,28 @@ async function fetchGeminiCLILocal(days) {
         det.requests  += 1;
         det.cost      += cost;
         byDayDetail.set(dayKey, det);
+
+        // Project bucket — slug from folder name (Gemini doesn't write a cwd
+        // field into the session JSON, so the slug is all we have).
+        const proj = byProject.get(projectSlug) || {
+          cwd: projectSlug,
+          project: friendlyProjectName(projectSlug),
+          input: 0, output: 0, cached: 0, reasoning: 0, tool: 0, requests: 0, cost: 0,
+          modelsMap: new Map(),
+          sessions: 0,
+        };
+        proj.input     += t.input    || 0;
+        proj.output    += t.output   || 0;
+        proj.cached    += t.cached   || 0;
+        proj.reasoning += t.thoughts || 0;
+        proj.tool      += t.tool     || 0;
+        proj.requests  += 1;
+        proj.cost      += cost;
+        const m = proj.modelsMap.get(model) || { model, requests: 0, cost: 0 };
+        m.requests += 1; m.cost += cost;
+        proj.modelsMap.set(model, m);
+        if (!sessionContributed) { proj.sessions += 1; sessionContributed = true; }
+        byProject.set(projectSlug, proj);
       }
     }
   }
@@ -2489,6 +2900,12 @@ async function fetchGeminiCLILocal(days) {
   const dailyBreakdown = [...byDayDetail.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, v]) => ({ date, ...v }));
+  const byProjectArr = [...byProject.values()]
+    .map(({ modelsMap, ...rest }) => ({
+      ...rest,
+      models: [...modelsMap.values()].sort((a, b) => b.cost - a.cost),
+    }))
+    .sort((a, b) => b.cost - a.cost);
 
   return {
     totals: {
@@ -2497,6 +2914,7 @@ async function fetchGeminiCLILocal(days) {
       requests: req, cost: totalCost, currency: 'USD',
     },
     models: Object.values(byModel).sort((a, b) => b.cost - a.cost),
+    byProject: byProjectArr,
     trend: sortedTrend,
     dailyBreakdown,
     windowDays: days,

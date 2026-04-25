@@ -28,4 +28,9 @@ contextBridge.exposeInMainWorld('api', {
   saveBundle: (payload) => ipcRenderer.invoke('export:save-bundle', payload),
   captureRegion: (rect) => ipcRenderer.invoke('export:capture-region', rect),
   captureHtml: (payload) => ipcRenderer.invoke('export:capture-html', payload),
+  getLaunchAtLogin: () => ipcRenderer.invoke('prefs:launch-at-login:get'),
+  setLaunchAtLogin: (enabled) => ipcRenderer.invoke('prefs:launch-at-login:set', enabled),
+  getChangelog: () => ipcRenderer.invoke('changelog:get'),
+  getAppVersion: () => ipcRenderer.invoke('app:version'),
+  onUpdateInstalled: (cb) => ipcRenderer.on('update-installed', (_e, payload) => cb(payload)),
 });

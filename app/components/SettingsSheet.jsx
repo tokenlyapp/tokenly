@@ -11,6 +11,8 @@ function SettingsSheet({
   onOpenApiKeys,
   onOpenExport,
   onOpenLicense,
+  onOpenChangelog,
+  appVersion,
   isPro = false,
 }) {
   // Human label for the current window: "24h" / "7d" / "Last 30d" etc.
@@ -18,6 +20,21 @@ function SettingsSheet({
     1: '24h', 7: '7d', 14: '14d', 30: '30d', 90: '90d', 180: '180d',
   }[currentDays] || (currentDays + 'd');
   const t = TOKENS.color;
+
+  // Launch-at-login state. Loaded from main on mount + every time the sheet
+  // opens (covers users who toggled it externally via System Settings).
+  const [launchAtLogin, setLaunchAtLoginState] = React.useState({ supported: true, enabled: false });
+  React.useEffect(() => {
+    if (!open || !window.api?.getLaunchAtLogin) return;
+    window.api.getLaunchAtLogin().then((s) => s && setLaunchAtLoginState(s));
+  }, [open]);
+  const toggleLaunchAtLogin = async () => {
+    if (!window.api?.setLaunchAtLogin) return;
+    const next = !launchAtLogin.enabled;
+    setLaunchAtLoginState((s) => ({ ...s, enabled: next })); // optimistic
+    const res = await window.api.setLaunchAtLogin(next);
+    if (res) setLaunchAtLoginState(res);
+  };
 
   const savedKeyCount = Object.values(savedKeys || {}).filter(Boolean).length;
 
@@ -95,6 +112,47 @@ function SettingsSheet({
             ))}
           </div>
         </div>
+
+        {/* Launch at login — table-stakes for menu-bar apps. macOS-only;
+            the toggle hides on platforms where setLoginItemSettings isn't
+            available (no current Tokenly distribution targets non-macOS, but
+            the renderer is robust to it). */}
+        {launchAtLogin.supported && (
+          <div style={{
+            background: t.card, border: `1px solid ${t.cardBorder}`,
+            borderRadius: 10, padding: '10px 12px', marginBottom: 12,
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+          }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>Launch at login</div>
+              <div style={{ fontSize: 10, color: t.textMute, marginTop: 2, lineHeight: 1.45 }}>
+                Open Tokenly automatically when you sign in. Starts hidden — only the tray icon appears.
+              </div>
+            </div>
+            <button
+              onClick={toggleLaunchAtLogin}
+              role="switch"
+              aria-checked={launchAtLogin.enabled}
+              style={{
+                position: 'relative',
+                width: 38, height: 22, borderRadius: 999,
+                border: 0, cursor: 'pointer', flexShrink: 0,
+                background: launchAtLogin.enabled ? t.accent : 'rgba(255,255,255,0.10)',
+                transition: 'background .15s',
+                padding: 0,
+              }}
+            >
+              <span style={{
+                position: 'absolute', top: 2, left: 2,
+                width: 18, height: 18, borderRadius: '50%',
+                background: '#fff',
+                transform: launchAtLogin.enabled ? 'translateX(16px)' : 'translateX(0)',
+                transition: 'transform .18s cubic-bezier(0.22, 1, 0.36, 1)',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
+              }} />
+            </button>
+          </div>
+        )}
 
         {/* Tokenly Max — always visible so Max users can always reach the
             activation sheet to view or remove their code. Free users get
@@ -246,6 +304,21 @@ function SettingsSheet({
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="12" y1="1" x2="12" y2="23" />
                 <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+              </svg>
+            )}
+          />
+        )}
+
+        {/* What's new — pulls release notes from GitHub Releases. */}
+        {onOpenChangelog && (
+          <SettingsEntry
+            t={t}
+            title="What's new"
+            subtitle={appVersion ? `Release notes for v${appVersion} and earlier.` : 'Release notes pulled from GitHub.'}
+            onClick={onOpenChangelog}
+            icon={(
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="12 2 15 8.5 22 9.3 17 14.1 18.2 21 12 17.7 5.8 21 7 14.1 2 9.3 9 8.5 12 2" />
               </svg>
             )}
           />

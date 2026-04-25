@@ -2,8 +2,52 @@
 // Ported from Claude Design; added a 'loading' status branch.
 const { useState: useStateC } = React;
 
-function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOpenExternal, isPro = false, onOpenLicense }) {
+// Compute a compare-mode split from the doubled-window data.
+// Returns null when compare mode is off or there's no breakdown to split.
+// Splits dailyBreakdown by calendar boundary (not by entry count) so sparse
+// usage days don't misclassify into the wrong half.
+function computeCompareSplit(data, compareWindowDays) {
+  if (!compareWindowDays || compareWindowDays <= 0) return null;
+  const breakdown = Array.isArray(data && data.dailyBreakdown) ? data.dailyBreakdown : null;
+  if (!breakdown || !breakdown.length) return null;
+  const currentCutoffMs = Date.now() - compareWindowDays * 86400 * 1000;
+  const dateOf = (r) => Date.parse(String(r.date || '').slice(0, 10) + 'T00:00:00Z');
+  const sumIt = (rows) => {
+    let tokens = 0, cost = 0, requests = 0;
+    for (const r of rows) {
+      tokens += (r.input || 0) + (r.output || 0) + (r.cache_read || 0) + (r.cached || 0);
+      cost   += Number(r.cost) || 0;
+      requests += Number(r.requests) || 0;
+    }
+    return { tokens, cost, requests };
+  };
+  const current = breakdown.filter((r) => Number.isFinite(dateOf(r)) && dateOf(r) >= currentCutoffMs);
+  const prior   = breakdown.filter((r) => Number.isFinite(dateOf(r)) && dateOf(r) < currentCutoffMs);
+  const c = sumIt(current);
+  const p = sumIt(prior);
+  const pct = (curr, prev) => (prev > 0 ? ((curr - prev) / prev) * 100 : (curr > 0 ? null : 0));
+  return {
+    current: c,
+    prior: p,
+    deltaTokens: pct(c.tokens, p.tokens),
+    deltaCost:   pct(c.cost,   p.cost),
+    priorAvailable: prior.length > 0 && (p.tokens > 0 || p.cost > 0),
+    compareWindowDays,
+  };
+}
+
+function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOpenExternal, isPro = false, onOpenLicense, compareWindowDays = 0 }) {
   const [hover, setHover] = useStateC(false);
+  // "By model" | "By project". Persisted per provider in localStorage.
+  const viewKey = `tky.breakdownView.${provider.id}`;
+  const initialView = (() => {
+    try { return localStorage.getItem(viewKey) || 'model'; } catch { return 'model'; }
+  })();
+  const [breakdownView, setBreakdownViewRaw] = useStateC(initialView);
+  const setBreakdownView = (v) => {
+    setBreakdownViewRaw(v);
+    try { localStorage.setItem(viewKey, v); } catch {}
+  };
   const t = TOKENS.color;
 
   // API-billed providers are paywalled. Render a locked body regardless of
@@ -197,6 +241,13 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
     const trendMax = Math.max(1, ...trend);
     const dailyAvg = trend.length ? trend.reduce((a, b) => a + b, 0) / trend.length : 0;
 
+    // In compare mode, the trend is over the doubled window. Anything before
+    // the midpoint is "prior", anything from the midpoint on is "current".
+    // Used to dim/brighten bars and draw a subtle divider.
+    const compareSplitIdx = compareWindowDays > 0 && trend.length > 1
+      ? Math.max(1, trend.length - compareWindowDays)
+      : null;
+
     return (
       <div style={{ paddingTop: 10 }}>
         {provider.id === 'openrouter' && (
@@ -293,6 +344,24 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
           const fmtPct = (v) => v != null ? `${Math.round(v)}%` : '—';
           const colorFor = (p) => p > 100 ? t.red : p > 80 ? t.amber : brandDark;
           const labelColorFor = (p) => p > 100 ? t.red : p > 80 ? t.amber : t.text;
+          // ISO timestamp → "Resets in 3h 17m" / "Resets in 2d 4h" / "Resets soon".
+          // Returns null on missing / unparseable / past timestamps so the UI hides cleanly.
+          const fmtResetIn = (iso) => {
+            if (!iso) return null;
+            const ms = Date.parse(iso);
+            if (!Number.isFinite(ms)) return null;
+            const delta = ms - Date.now();
+            if (delta <= 0) return null;
+            const mins = Math.round(delta / 60000);
+            if (mins < 1) return 'Resets in <1m';
+            if (mins < 60) return `Resets in ${mins}m`;
+            const hours = Math.floor(mins / 60);
+            const remMins = mins % 60;
+            if (hours < 24) return remMins ? `Resets in ${hours}h ${remMins}m` : `Resets in ${hours}h`;
+            const days = Math.floor(hours / 24);
+            const remHours = hours % 24;
+            return remHours ? `Resets in ${days}d ${remHours}h` : `Resets in ${days}d`;
+          };
 
           // Quota rows can come either as named fields (Claude/Codex) or as
           // an explicit `rows` array (Gemini's per-model-family rollup).
@@ -380,18 +449,27 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
                 )}
               </div>
 
-              {rows.map((r) => (
-                <div key={r.key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 11 }}>
-                    <span style={{ color: t.textDim }}>{r.label}</span>
-                    <span style={{
-                      fontWeight: 600, fontVariantNumeric: 'tabular-nums',
-                      color: labelColorFor(r.win.usedPercent),
-                    }}>{fmtPct(r.win.usedPercent)}</span>
+              {rows.map((r) => {
+                const resetIn = fmtResetIn(r.win.resetsAt);
+                return (
+                  <div key={r.key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 11 }}>
+                      <span style={{ color: t.textDim }}>{r.label}</span>
+                      <span style={{
+                        fontWeight: 600, fontVariantNumeric: 'tabular-nums',
+                        color: labelColorFor(r.win.usedPercent),
+                      }}>{fmtPct(r.win.usedPercent)}</span>
+                    </div>
+                    <Bar pct={r.win.usedPercent} />
+                    {resetIn && (
+                      <div style={{
+                        fontSize: 9.5, color: t.textMute, textAlign: 'right',
+                        fontVariantNumeric: 'tabular-nums', marginTop: 1,
+                      }}>{resetIn}</div>
+                    )}
                   </div>
-                  <Bar pct={r.win.usedPercent} />
-                </div>
-              ))}
+                );
+              })}
 
               {e && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -419,26 +497,48 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
             borderRadius: 8, padding: '8px 10px 8px', marginBottom: 10,
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <div style={{ fontSize: 9, color: t.textMute, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Daily tokens</div>
+              <div style={{ fontSize: 9, color: t.textMute, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                Daily tokens{compareSplitIdx ? ' · prior vs current' : ''}
+              </div>
               <div style={{ fontSize: 10, color: t.textDim, fontVariantNumeric: 'tabular-nums' }}>avg {fmt(dailyAvg)}</div>
             </div>
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 32 }}>
-              {trend.map((v, i) => (
-                <div key={i} style={{
-                  flex: 1,
-                  height: v > 0 ? `${Math.max(8, (v / trendMax) * 100)}%` : '6%',
-                  background: v > 0
-                    ? `linear-gradient(180deg, ${t.accent} 0%, rgba(124,92,255,0.35) 100%)`
-                    : 'rgba(255,255,255,0.06)',
-                  borderRadius: 1.5,
-                }} title={fmt(v) + ' tokens'} />
-              ))}
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 32, position: 'relative' }}>
+              {trend.map((v, i) => {
+                const isPrior = compareSplitIdx != null && i < compareSplitIdx;
+                const fill = v > 0
+                  ? (isPrior
+                      ? `linear-gradient(180deg, ${t.textDim} 0%, rgba(138,140,153,0.18) 100%)`
+                      : `linear-gradient(180deg, ${t.accent} 0%, rgba(124,92,255,0.35) 100%)`)
+                  : 'rgba(255,255,255,0.06)';
+                return (
+                  <div key={i} style={{
+                    flex: 1,
+                    height: v > 0 ? `${Math.max(8, (v / trendMax) * 100)}%` : '6%',
+                    background: fill,
+                    borderRadius: 1.5,
+                    opacity: isPrior ? 0.55 : 1,
+                  }} title={fmt(v) + ' tokens' + (isPrior ? ' (prior period)' : '')} />
+                );
+              })}
+              {compareSplitIdx != null && (
+                <div style={{
+                  position: 'absolute', top: -2, bottom: -2,
+                  left: `calc(${(compareSplitIdx / trend.length) * 100}% - 0.5px)`,
+                  width: 1, background: 'rgba(255,255,255,0.20)',
+                  pointerEvents: 'none',
+                }} />
+              )}
             </div>
             <div style={{
               display: 'flex', justifyContent: 'space-between',
               fontSize: 9, color: t.textMute, marginTop: 4, fontVariantNumeric: 'tabular-nums',
             }}>
               <span>{trend.length}d ago</span>
+              {compareSplitIdx != null && (
+                <span style={{ color: t.textDim, fontWeight: 500 }}>
+                  prior {compareWindowDays}d  ·  current {compareWindowDays}d
+                </span>
+              )}
               <span>today</span>
             </div>
           </div>
@@ -482,44 +582,126 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
             </div>
           </div>
         )}
-        <div style={{ fontSize: 9, color: t.textMute, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4, marginTop: 4 }}>
-          By model
-        </div>
-        <div>
-          {(data.models || []).length === 0 && (
-            <div style={{ padding: '10px 2px', fontSize: 11, color: t.textDim }}>
-              No usage in this window.
-            </div>
-          )}
-          {(data.models || []).slice(0, 12).map((m, i, arr) => {
-            const tokens = (m.input || 0) + (m.output || 0) + (m.cache_read || 0) + (m.cached || 0);
-            const meta = provider.id === 'anthropic'
-              ? `in ${fmt(m.input)} · out ${fmt(m.output)}${m.cache_creation ? ' · cw ' + fmt(m.cache_creation) : ''}${m.cache_read ? ' · cr ' + fmt(m.cache_read) : ''}`
-              : `in ${fmt(m.input)}${m.cached ? ' (cached ' + fmt(m.cached) + ')' : ''} · out ${fmt(m.output)} · ${fmt(m.requests)} req`;
+        {/* Breakdown header: by-model is universal; by-project shown only
+            when the local fetcher emits it (Claude / Codex / Gemini). */}
+        {(() => {
+          const hasProjects = Array.isArray(data.byProject) && data.byProject.length > 0;
+          const view = hasProjects ? breakdownView : 'model';
+          const TabBtn = ({ k, label }) => {
+            const active = view === k;
             return (
-              <div key={m.model} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '7px 0', gap: 8,
-                borderBottom: i === arr.length - 1 ? 'none' : '1px solid rgba(255,255,255,0.04)',
-              }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{
-                    fontSize: 11.5, fontWeight: 500,
-                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                  }}>{m.model}</div>
-                  <div style={{ fontSize: 10, color: t.textMute, marginTop: 1, fontVariantNumeric: 'tabular-nums' }}>{meta}</div>
-                </div>
-                <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                  <div style={{ fontSize: 11.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{fmt(tokens)}</div>
-                  {m.cost != null && m.cost > 0 && (
-                    <div style={{ fontSize: 10, color: t.textDim, fontVariantNumeric: 'tabular-nums', marginTop: 1 }}>
-                      {fmtMoney(m.cost)}
-                    </div>
-                  )}
-                </div>
-              </div>
+              <button
+                onClick={(e) => { e.stopPropagation(); setBreakdownView(k); }}
+                style={{
+                  background: active ? 'rgba(255,255,255,0.06)' : 'transparent',
+                  border: `1px solid ${active ? t.cardBorderStrong : 'transparent'}`,
+                  color: active ? t.text : t.textMute,
+                  fontSize: 9, letterSpacing: '0.04em', textTransform: 'uppercase',
+                  padding: '3px 8px', borderRadius: 999, cursor: 'pointer',
+                  fontWeight: active ? 600 : 500,
+                }}
+              >{label}</button>
             );
-          })}
+          };
+          return (
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              marginBottom: 4, marginTop: 4,
+            }}>
+              <div style={{
+                fontSize: 9, color: t.textMute, textTransform: 'uppercase', letterSpacing: '0.04em',
+              }}>{view === 'project' ? 'By project' : 'By model'}</div>
+              {hasProjects && (
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <TabBtn k="model"   label="Model" />
+                  <TabBtn k="project" label="Project" />
+                </div>
+              )}
+            </div>
+          );
+        })()}
+        <div>
+          {breakdownView === 'project' && Array.isArray(data.byProject) && data.byProject.length > 0 ? (
+            data.byProject.slice(0, 12).map((p, i, arr) => {
+              const tokens = (p.input || 0) + (p.output || 0) + (p.cache_read || 0) + (p.cached || 0);
+              const topModel = (p.models && p.models[0]) ? p.models[0].model : null;
+              const sourceMix = p.entrypoints
+                ? Object.entries(p.entrypoints).sort((a, b) => b[1] - a[1])
+                    .map(([k]) => (k === 'claude-cli' ? 'CLI' : k === 'claude-desktop' ? 'Desktop' : k))
+                    .slice(0, 2).join(' + ')
+                : (p.originators
+                    ? Object.entries(p.originators).sort((a, b) => b[1] - a[1])
+                        .map(([k]) => (k === 'codex_cli' ? 'CLI' : (k === 'Codex Desktop' || k === 'codex_desktop') ? 'Desktop' : k))
+                        .slice(0, 2).join(' + ')
+                    : null);
+              const meta = [
+                topModel,
+                `${fmt(p.requests)} req`,
+                p.sessions ? `${p.sessions} session${p.sessions === 1 ? '' : 's'}` : null,
+                sourceMix,
+              ].filter(Boolean).join(' · ');
+              return (
+                <div key={p.cwd} title={p.cwd} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '7px 0', gap: 8,
+                  borderBottom: i === arr.length - 1 ? 'none' : '1px solid rgba(255,255,255,0.04)',
+                }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{
+                      fontSize: 11.5, fontWeight: 500,
+                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                    }}>{p.project}</div>
+                    <div style={{ fontSize: 10, color: t.textMute, marginTop: 1, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meta}</div>
+                  </div>
+                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{fmt(tokens)}</div>
+                    {p.cost != null && p.cost > 0 && (
+                      <div style={{ fontSize: 10, color: t.textDim, fontVariantNumeric: 'tabular-nums', marginTop: 1 }}>
+                        {fmtMoney(p.cost)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <>
+              {(data.models || []).length === 0 && (
+                <div style={{ padding: '10px 2px', fontSize: 11, color: t.textDim }}>
+                  No usage in this window.
+                </div>
+              )}
+              {(data.models || []).slice(0, 12).map((m, i, arr) => {
+                const tokens = (m.input || 0) + (m.output || 0) + (m.cache_read || 0) + (m.cached || 0);
+                const meta = provider.id === 'anthropic'
+                  ? `in ${fmt(m.input)} · out ${fmt(m.output)}${m.cache_creation ? ' · cw ' + fmt(m.cache_creation) : ''}${m.cache_read ? ' · cr ' + fmt(m.cache_read) : ''}`
+                  : `in ${fmt(m.input)}${m.cached ? ' (cached ' + fmt(m.cached) + ')' : ''} · out ${fmt(m.output)} · ${fmt(m.requests)} req`;
+                return (
+                  <div key={m.model} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '7px 0', gap: 8,
+                    borderBottom: i === arr.length - 1 ? 'none' : '1px solid rgba(255,255,255,0.04)',
+                  }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{
+                        fontSize: 11.5, fontWeight: 500,
+                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                      }}>{m.model}</div>
+                      <div style={{ fontSize: 10, color: t.textMute, marginTop: 1, fontVariantNumeric: 'tabular-nums' }}>{meta}</div>
+                    </div>
+                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                      <div style={{ fontSize: 11.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{fmt(tokens)}</div>
+                      {m.cost != null && m.cost > 0 && (
+                        <div style={{ fontSize: 10, color: t.textDim, fontVariantNumeric: 'tabular-nums', marginTop: 1 }}>
+                          {fmtMoney(m.cost)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
         </div>
         <div style={{
           marginTop: 8, paddingTop: 6, borderTop: `1px solid ${t.cardBorder}`,
@@ -597,16 +779,28 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
         </>
       );
     }
-    const tokens = (data.totals.input || 0) + (data.totals.output || 0) + (data.totals.cache_read || 0) + (data.totals.cached || 0);
+    const fullTokens = (data.totals.input || 0) + (data.totals.output || 0) + (data.totals.cache_read || 0) + (data.totals.cached || 0);
     const info = PROVIDER_COST_INFO[provider.id];
     const isEstimate = !!(info && info.emphasis);
 
+    // Compare mode: when active, the primary number reflects the CURRENT
+    // half of the doubled fetch window. Delta vs prior is rendered as a pill.
+    // When compare is off (compareWindowDays = 0) the values fall back to the
+    // full-window totals and no pill renders.
+    const split = computeCompareSplit(data, compareWindowDays);
+    const tokens = split ? split.current.tokens : fullTokens;
+    const cost   = split ? split.current.cost   : data.totals.cost;
+
     // For local (estimate) cards: tokens are the primary number, cost is the tiny caption.
     // For API cards: dollars are the primary number, "actual spend" is the tiny caption.
-    const primary = isEstimate ? fmt(tokens) + ' tok' : fmtMoney(data.totals.cost);
-    const secondary = isEstimate
-      ? { text: 'token value ' + fmtMoney(data.totals.cost), color: TOKENS.color.amber }
+    const primary = isEstimate ? fmt(tokens) + ' tok' : fmtMoney(cost);
+    const compareLabel = split ? `vs prior ${compareWindowDays}d` : null;
+    const secondaryBase = isEstimate
+      ? { text: 'token value ' + fmtMoney(cost), color: TOKENS.color.amber }
       : { text: 'actual spend · ' + fmt(tokens) + ' tok', color: t.textDim };
+    const secondary = compareLabel
+      ? { text: `${secondaryBase.text} · ${compareLabel}`, color: secondaryBase.color }
+      : secondaryBase;
 
     return (
       <>
@@ -616,6 +810,45 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
             fontSize: 13, fontWeight: 600, fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.01em',
           }}>
             <span>{primary}</span>
+            {split && (() => {
+              // Delta uses the metric that's "primary" for this card type:
+              // tokens for local/estimate cards, cost for API cards.
+              const delta = isEstimate ? split.deltaTokens : split.deltaCost;
+              if (!split.priorAvailable) {
+                return (
+                  <span title="Not enough prior-period data to compare." style={{
+                    fontSize: 9, fontWeight: 600, color: t.textMute,
+                    background: 'rgba(255,255,255,0.04)',
+                    border: `1px solid ${t.cardBorder}`,
+                    borderRadius: 999, padding: '1px 6px',
+                    letterSpacing: '0.04em', textTransform: 'uppercase',
+                  }}>NEW</span>
+                );
+              }
+              if (delta == null) return null;
+              const up = delta > 0.5;
+              const down = delta < -0.5;
+              // Up = more usage = engagement signal (green).
+              // Down = less usage (red). Roughly flat = amber.
+              const c = up ? t.green : down ? t.red : t.amber;
+              const arrow = up ? '↑' : down ? '↓' : '·';
+              const mag = Math.abs(delta);
+              const label = mag >= 100 ? `${arrow} ${Math.round(mag)}%` : `${arrow} ${mag.toFixed(mag < 10 ? 1 : 0)}%`;
+              return (
+                <span
+                  title={`Current ${compareWindowDays}d: ${isEstimate ? fmt(split.current.tokens) + ' tok' : fmtMoney(split.current.cost)} · Prior ${compareWindowDays}d: ${isEstimate ? fmt(split.prior.tokens) + ' tok' : fmtMoney(split.prior.cost)}`}
+                  style={{
+                    fontSize: 9.5, fontWeight: 700,
+                    color: c,
+                    background: `${c}1c`,
+                    border: `1px solid ${c}3a`,
+                    borderRadius: 999, padding: '1px 6px',
+                    fontVariantNumeric: 'tabular-nums',
+                    letterSpacing: '0.02em',
+                  }}
+                >{label}</span>
+              );
+            })()}
             {info && (
               <InfoTip
                 emphasis={isEstimate}

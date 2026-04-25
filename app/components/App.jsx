@@ -12,6 +12,18 @@ function LLMUsageApp() {
   const [exportOpen, setExportOpen] = useStateA(false);
   const [chartsOpen, setChartsOpen] = useStateA(false);
   const [licenseOpen, setLicenseOpen] = useStateA(false);
+  const [changelogOpen, setChangelogOpen] = useStateA(false);
+  const [appVersion, setAppVersion] = useStateA(null);
+  // "Last seen" version is the version the user has already viewed in the
+  // What's-new sheet. If app version is newer, the post-update banner shows.
+  const [lastSeenVersion, setLastSeenVersion] = useStateA(() => {
+    try { return localStorage.getItem('lastSeenVersion') || null; } catch { return null; }
+  });
+  const markVersionSeen = (v) => {
+    if (!v || v === lastSeenVersion) return;
+    setLastSeenVersion(v);
+    try { localStorage.setItem('lastSeenVersion', v); } catch {}
+  };
   const [licenseState, setLicenseState] = useStateA({ tier: 'free', license: null });
   const isPro = licenseState.tier === 'max';
   const [spinning, setSpinning] = useStateA(false);
@@ -22,6 +34,19 @@ function LLMUsageApp() {
     setDays(v);
     try { localStorage.setItem('windowDays', String(v)); } catch {}
   };
+  // Compare-to-prior-period mode. When ON, fetches double the window so each
+  // card can split current vs prior and show a delta pill. Persists per-user.
+  const [compare, setCompare] = useStateA(() => {
+    try { return localStorage.getItem('compareMode') === '1'; } catch { return false; }
+  });
+  const updateCompare = (v) => {
+    setCompare(v);
+    try { localStorage.setItem('compareMode', v ? '1' : '0'); } catch {}
+  };
+  // Doubled fetch window when compare is on. Capped at 180 to match the
+  // longest range we already support; OpenRouter caps at 30d server-side and
+  // surfaces "prior unavailable" gracefully when its response is truncated.
+  const fetchDays = compare ? Math.min(360, days * 2) : days;
   const [meta, setMeta] = useStateA({});       // provider -> { present, tail }
   const [usage, setUsage] = useStateA({});     // provider -> { ok, data?|error? } | 'loading'
   const [booted, setBooted] = useStateA(false);
@@ -89,7 +114,7 @@ function LLMUsageApp() {
       }
       return next;
     });
-  }, [days]);
+  }, [days, compare]);
 
   const refreshAll = useCallback(async () => {
     const myVersion = ++refreshVersionRef.current;
@@ -102,7 +127,7 @@ function LLMUsageApp() {
         // Non-keyless (API) providers are Max-only. Skip fetching them
         // entirely on Free to avoid wasted API calls + stale data.
         if (!isPro && !p.keyless) return;
-        const res = await window.api.fetchUsage(p.id, days);
+        const res = await window.api.fetchUsage(p.id, fetchDays);
         if (myVersion !== refreshVersionRef.current) return; // stale — user switched ranges
         setUsage((prev) => {
           const old = prev[p.id];
@@ -117,7 +142,7 @@ function LLMUsageApp() {
         setLastRefreshedAt(Date.now());
       }
     }
-  }, [days, refreshMeta, isPro]);
+  }, [fetchDays, refreshMeta, isPro]);
 
   useEffectA(() => { refreshAll(); }, [refreshAll]);
 
@@ -163,6 +188,20 @@ function LLMUsageApp() {
 
   // When the tier flips Max → Free, wipe any cached API-provider usage so the
   // main popover doesn't show stale numbers behind the Max-locked overlay.
+  // Load the app version on mount so the post-update banner can compare
+  // against lastSeenVersion. Cheap IPC; one-shot. Brand-new installs (no
+  // lastSeenVersion stored yet) auto-seed to the current version so the
+  // banner doesn't show "Updated to vX" on a fresh first launch.
+  useEffectA(() => {
+    if (!window.api?.getAppVersion) return;
+    window.api.getAppVersion().then((v) => {
+      if (!v) return;
+      setAppVersion(v);
+      if (!lastSeenVersion) markVersionSeen(v);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffectA(() => {
     if (isPro) return;
     setUsage((prev) => {
@@ -457,11 +496,13 @@ function LLMUsageApp() {
         </div>
       </header>
 
-      {/* Segmented range picker */}
+      {/* Segmented range picker + compare-to-prior toggle */}
       <div style={{
         padding: '8px 14px 10px', position: 'relative', zIndex: 15,
+        display: 'flex', alignItems: 'center', gap: 8,
       }}>
         <div style={{
+          flex: 1,
           display: 'flex',
           background: 'rgba(0,0,0,0.25)',
           border: `1px solid ${t.cardBorder}`,
@@ -487,12 +528,88 @@ function LLMUsageApp() {
             );
           })}
         </div>
+        {/* Compare-to-prior toggle. Doubles the fetch window so each card
+            can split current vs prior and render a delta pill. */}
+        <button
+          onClick={() => updateCompare(!compare)}
+          title={compare ? `Comparing last ${days}d vs prior ${days}d. Click to disable.` : 'Compare current period vs the prior period of the same length'}
+          style={{
+            border: `1px solid ${compare ? t.accent : t.cardBorder}`,
+            background: compare ? 'rgba(124,92,255,0.18)' : 'rgba(0,0,0,0.25)',
+            color: compare ? t.text : t.textDim,
+            borderRadius: 9, padding: '5px 10px',
+            fontSize: 10.5, fontWeight: 600, letterSpacing: '-0.01em',
+            cursor: 'pointer', fontFamily: 'inherit',
+            display: 'inline-flex', alignItems: 'center', gap: 5,
+            transition: 'background .15s, color .15s, border-color .15s',
+            boxShadow: compare ? '0 2px 8px rgba(124,92,255,0.25)' : 'none',
+          }}
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="17 1 21 5 17 9" />
+            <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+            <polyline points="7 23 3 19 7 15" />
+            <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+          </svg>
+          vs prior
+        </button>
       </div>
 
       <main style={{
         position: 'absolute', top: 92, left: 0, right: 0, bottom: 0,
         overflowY: 'auto', padding: '4px 14px 18px',
       }}>
+        {/* Post-update "what's new" banner. Shows once per new version. */}
+        {!isFirstRun && appVersion && lastSeenVersion && appVersion !== lastSeenVersion && (
+          <div style={{
+            background: `linear-gradient(135deg, ${t.accent}22, ${t.accent2}18)`,
+            border: `1px solid ${t.accent}55`,
+            borderRadius: 12, padding: '10px 12px', marginBottom: 10,
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+          }}>
+            <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 9 }}>
+              <span style={{
+                width: 24, height: 24, borderRadius: 7,
+                background: `linear-gradient(135deg, ${t.accent}, ${t.accent2})`,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                color: '#fff', flexShrink: 0,
+              }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="12 2 15 8.5 22 9.3 17 14.1 18.2 21 12 17.7 5.8 21 7 14.1 2 9.3 9 8.5 12 2" />
+                </svg>
+              </span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: t.text }}>
+                  Tokenly updated to v{appVersion}
+                </div>
+                <div style={{ fontSize: 10.5, color: t.textDim, marginTop: 1 }}>
+                  See what's new in this release.
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+              <button
+                onClick={() => setChangelogOpen(true)}
+                style={{
+                  background: t.accent, color: '#fff',
+                  border: 0, borderRadius: 7, padding: '5px 10px',
+                  fontSize: 10.5, fontWeight: 600, cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >View</button>
+              <button
+                onClick={() => markVersionSeen(appVersion)}
+                title="Dismiss"
+                style={{
+                  background: 'transparent', color: t.textMute,
+                  border: 0, borderRadius: 7, padding: '5px 7px',
+                  fontSize: 14, cursor: 'pointer', lineHeight: 1,
+                  fontFamily: 'inherit',
+                }}
+              >×</button>
+            </div>
+          </div>
+        )}
         {isFirstRun ? (
           <FirstRunEmpty onOpenSettings={() => setSheetOpen(true)} />
         ) : (
@@ -507,6 +624,7 @@ function LLMUsageApp() {
               onOpenExternal={onOpenExternal}
               isPro={isPro}
               onOpenLicense={() => setLicenseOpen(true)}
+              compareWindowDays={compare ? days : 0}
             />
           ))
         )}
@@ -528,6 +646,8 @@ function LLMUsageApp() {
         onOpenApiKeys={() => { setSheetOpen(false); setApiKeysOpen(true); }}
         onOpenExport={() => { setSheetOpen(false); setExportOpen(true); }}
         onOpenLicense={() => { setSheetOpen(false); setLicenseOpen(true); }}
+        onOpenChangelog={() => { setSheetOpen(false); setChangelogOpen(true); }}
+        appVersion={appVersion}
         isPro={isPro}
       />
       <ApiKeysSheet
@@ -543,6 +663,12 @@ function LLMUsageApp() {
         open={pricingOpen}
         onClose={() => setPricingOpen(false)}
         onBack={() => { setPricingOpen(false); setSheetOpen(true); }}
+      />
+      <ChangelogSheet
+        open={changelogOpen}
+        onClose={() => setChangelogOpen(false)}
+        currentVersion={appVersion}
+        onMarkSeen={markVersionSeen}
       />
       <BudgetsSheet
         open={budgetsOpen && isPro}
