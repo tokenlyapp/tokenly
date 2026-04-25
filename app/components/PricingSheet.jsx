@@ -149,7 +149,7 @@ function PricingSheet({ open, onClose, onBack }) {
           overflowY: 'auto',
         }}
       >
-        <SheetMinimize onClick={onClose} />
+        {!onBack && <SheetMinimize onClick={onClose} />}
 
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

@@ -1,18 +1,14 @@
 // Settings sheet — app-level preferences. API key management lives in its
 // own ApiKeysSheet (reached via the "API Keys →" entry below).
 function SettingsSheet({
-  open, onClose, savedKeys = {},
+  open, onClose, onBack,
   badgeStyle = 'monogram', onBadgeStyleChange,
   trayMode = 'off', onTrayModeChange,
   traySource = 'all', onTraySourceChange,
+  trayContent = 'tokens', onTrayContentChange,
+  trayQuota = 'claude-code:5h', onTrayQuotaChange,
   currentDays = 30,
-  onOpenPricing,
-  onOpenBudgets,
-  onOpenApiKeys,
-  onOpenExport,
-  onOpenLicense,
-  onOpenChangelog,
-  appVersion,
+  usage = {},
   isPro = false,
 }) {
   // Human label for the current window: "24h" / "7d" / "Last 30d" etc.
@@ -35,8 +31,6 @@ function SettingsSheet({
     const res = await window.api.setLaunchAtLogin(next);
     if (res) setLaunchAtLoginState(res);
   };
-
-  const savedKeyCount = Object.values(savedKeys || {}).filter(Boolean).length;
 
   return (
     <React.Fragment>
@@ -66,7 +60,14 @@ function SettingsSheet({
           overflowY: 'auto',
         }}
       >
-        <SheetMinimize onClick={onClose} />
+        {onBack ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <IconBtn onClick={onBack} title="Back to menu">{Icons.arrowLeft}</IconBtn>
+            <div style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>Settings</div>
+          </div>
+        ) : (
+          <SheetMinimize onClick={onClose} />
+        )}
 
         {/* Appearance — badge style toggle */}
         <div style={{
@@ -154,58 +155,6 @@ function SettingsSheet({
           </div>
         )}
 
-        {/* Tokenly Max — always visible so Max users can always reach the
-            activation sheet to view or remove their code. Free users get
-            an upgrade CTA here too, right alongside the locked entries
-            below. */}
-        {onOpenLicense && (
-          <button
-            onClick={onOpenLicense}
-            style={{
-              width: '100%', textAlign: 'left',
-              background: isPro
-                ? 'linear-gradient(135deg, rgba(232,164,65,0.10), rgba(124,92,255,0.05))'
-                : t.card,
-              border: isPro
-                ? '1px solid rgba(232,164,65,0.35)'
-                : `1px solid ${t.cardBorder}`,
-              borderRadius: 10, padding: '10px 12px', marginBottom: 12,
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-              cursor: 'pointer', fontFamily: 'inherit', color: t.text,
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-                Tokenly Max
-                {isPro && (
-                  <span style={{
-                    fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-                    padding: '2px 6px', borderRadius: 4, textTransform: 'uppercase',
-                    color: '#1a1408', lineHeight: 1,
-                    background: 'linear-gradient(135deg, #ffd772, #e8a441)',
-                    border: '1px solid rgba(232,164,65,0.55)',
-                  }}>Max</span>
-                )}
-              </div>
-              <div style={{ fontSize: 10, color: t.textMute, marginTop: 2, lineHeight: 1.45 }}>
-                {isPro
-                  ? 'Active on this Mac. View your activation code or remove it here.'
-                  : 'Unlock the APIs + budget alerts for $5.99 lifetime.'}
-              </div>
-            </div>
-            {isPro ? (
-              <span style={{ color: t.textDim, flexShrink: 0, fontSize: 14 }}>→</span>
-            ) : (
-              <span style={{
-                fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
-                color: t.accent, background: 'rgba(124,92,255,0.12)',
-                border: '1px solid rgba(124,92,255,0.3)',
-                padding: '3px 7px', borderRadius: 5, flexShrink: 0, whiteSpace: 'nowrap',
-              }}>Unlock Max</span>
-            )}
-          </button>
-        )}
-
         {/* Menu bar tokens — dual control: which source, which period */}
         <div style={{
           background: t.card, border: `1px solid ${t.cardBorder}`,
@@ -251,7 +200,7 @@ function SettingsSheet({
           </div>
 
           {/* Period segmented control */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
             <div style={{ fontSize: 11, color: t.textDim, flexShrink: 0, width: 48 }}>Period</div>
             <div style={{
               flex: 1,
@@ -291,109 +240,100 @@ function SettingsSheet({
               })}
             </div>
           </div>
+
+          {/* Content selector — tokens / quota / both. Picks WHAT goes in the
+              menu bar title alongside the icon. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: t.textDim, flexShrink: 0, width: 48 }}>Show</div>
+            <div style={{
+              flex: 1,
+              display: 'flex', background: 'rgba(0,0,0,0.3)',
+              border: `1px solid ${t.cardBorder}`, borderRadius: 7, padding: 2, gap: 1,
+            }}>
+              {[
+                { v: 'tokens', label: 'Tokens',  title: 'Show only token counts (the existing behavior).' },
+                { v: 'quota',  label: 'Quota',   title: 'Show only a subscription quota %, like Claude 5h 73%.' },
+                { v: 'both',   label: 'Both',    title: 'Tokens · Quota %, separated by a dot.' },
+              ].map((opt) => {
+                const active = trayContent === opt.v;
+                return (
+                  <button
+                    key={opt.v}
+                    onClick={() => onTrayContentChange && onTrayContentChange(opt.v)}
+                    title={opt.title}
+                    style={{
+                      flex: 1,
+                      background: active ? t.accent : 'transparent',
+                      color: active ? '#fff' : t.textDim,
+                      border: 0, padding: '5px 8px', borderRadius: 6,
+                      fontSize: 10.5, fontWeight: 500, cursor: 'pointer',
+                      fontFamily: 'inherit', whiteSpace: 'nowrap',
+                      transition: 'background .15s, color .15s',
+                    }}
+                  >{opt.label}</button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Quota source — which provider/window to display when content
+              includes a quota. Options are derived from currently-loaded
+              quota data so we never show a window the user can't actually
+              read right now. */}
+          {(trayContent === 'quota' || trayContent === 'both') && (() => {
+            const opts = [];
+            const claude = usage['claude-code']?.data?.quota;
+            if (claude && !claude._unavailable) {
+              if (claude.fiveHour)     opts.push({ v: 'claude-code:5h',   label: 'Claude · 5h' });
+              if (claude.sevenDay)     opts.push({ v: 'claude-code:7d',   label: 'Claude · 7d' });
+              if (claude.sevenDayOpus) opts.push({ v: 'claude-code:opus', label: 'Claude · Opus 7d' });
+            }
+            const codex = usage['codex']?.data?.quota;
+            if (codex && !codex._unavailable) {
+              if (codex.fiveHour) opts.push({ v: 'codex:5h', label: 'ChatGPT · 5h' });
+              if (codex.sevenDay) opts.push({ v: 'codex:7d', label: 'ChatGPT · 7d' });
+            }
+            const gemini = usage['gemini-cli']?.data?.quota;
+            if (gemini && !gemini._unavailable && Array.isArray(gemini.rows)) {
+              gemini.rows.forEach((r, i) => {
+                opts.push({ v: `gemini-cli:row${i}`, label: `Gemini · ${r.label || 'bucket ' + i}` });
+              });
+            }
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ fontSize: 11, color: t.textDim, flexShrink: 0, width: 48 }}>Quota</div>
+                {opts.length === 0 ? (
+                  <div style={{
+                    flex: 1, fontSize: 10.5, color: t.textMute, lineHeight: 1.5,
+                    background: 'rgba(0,0,0,0.2)', border: `1px dashed ${t.cardBorder}`,
+                    borderRadius: 7, padding: '7px 10px',
+                  }}>
+                    No quota data yet. Open Tokenly's main view once so quotas load — they'll show here next.
+                  </div>
+                ) : (
+                  <select
+                    value={trayQuota}
+                    onChange={(e) => onTrayQuotaChange && onTrayQuotaChange(e.target.value)}
+                    style={{
+                      flex: 1,
+                      appearance: 'none', WebkitAppearance: 'none',
+                      background: 'rgba(0,0,0,0.3)',
+                      border: `1px solid ${t.cardBorder}`,
+                      color: t.text, borderRadius: 7, padding: '6px 10px',
+                      fontSize: 11, fontWeight: 500, cursor: 'pointer',
+                      fontFamily: 'inherit', outline: 'none',
+                    }}
+                  >
+                    {opts.map((o) => (
+                      <option key={o.v} value={o.v}>{o.label}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
-        {/* View current pricing — always accessible (Free + Max) */}
-        {onOpenPricing && (
-          <SettingsEntry
-            t={t}
-            title="View current LLM token pricing"
-            subtitle="Per-model USD rates the app uses to estimate cost. Auto-refreshed daily."
-            onClick={onOpenPricing}
-            icon={(
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="1" x2="12" y2="23" />
-                <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-              </svg>
-            )}
-          />
-        )}
-
-        {/* What's new — pulls release notes from GitHub Releases. */}
-        {onOpenChangelog && (
-          <SettingsEntry
-            t={t}
-            title="What's new"
-            subtitle={appVersion ? `Release notes for v${appVersion} and earlier.` : 'Release notes pulled from GitHub.'}
-            onClick={onOpenChangelog}
-            icon={(
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polygon points="12 2 15 8.5 22 9.3 17 14.1 18.2 21 12 17.7 5.8 21 7 14.1 2 9.3 9 8.5 12 2" />
-              </svg>
-            )}
-          />
-        )}
-
-        {/* API Keys — Max feature */}
-        {onOpenApiKeys && (
-          <SettingsEntry
-            t={t}
-            title="API Keys"
-            subtitle={
-              isPro
-                ? (savedKeyCount > 0
-                    ? `${savedKeyCount} saved · encrypted with your OS keychain.`
-                    : 'Add admin keys for OpenAI, Anthropic, or OpenRouter to track API billing.')
-                : 'Connect OpenAI, Anthropic, or OpenRouter admin keys.'
-            }
-            locked={!isPro}
-            maxUnlocked={isPro}
-            onClick={isPro ? onOpenApiKeys : onOpenLicense}
-            icon={(
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 2l-9.6 9.6" />
-                <circle cx="7.5" cy="15.5" r="5.5" />
-                <path d="M15.5 7.5L19 11" />
-                <path d="M17.5 5.5L21 9" />
-              </svg>
-            )}
-          />
-        )}
-
-        {/* Budget alerts — Max feature */}
-        {onOpenBudgets && (
-          <SettingsEntry
-            t={t}
-            title="Set budget alerts"
-            subtitle={
-              isPro
-                ? 'Daily $ thresholds for API spend + daily spend summary notification.'
-                : 'Get notified when API spend crosses 50% / 80% / 100% of your daily budget.'
-            }
-            locked={!isPro}
-            maxUnlocked={isPro}
-            onClick={isPro ? onOpenBudgets : onOpenLicense}
-            icon={(
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-              </svg>
-            )}
-          />
-        )}
-
-        {/* Export data — Max feature */}
-        {onOpenExport && (
-          <SettingsEntry
-            t={t}
-            title="Export data"
-            subtitle={
-              isPro
-                ? `CSV or JSON of the current ${rangeShort} window — daily trend, totals, or per-model breakdown.`
-                : 'Download your usage as CSV or JSON for spreadsheets, reports, or a DataFrame.'
-            }
-            locked={!isPro}
-            maxUnlocked={isPro}
-            onClick={isPro ? onOpenExport : onOpenLicense}
-            icon={(
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-            )}
-          />
-        )}
       </section>
     </React.Fragment>
   );

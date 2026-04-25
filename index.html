@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; img-src 'self' data:;" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: data:; connect-src 'self' blob:;" />
   <title>Tokenly</title>
   <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
   <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png" />
@@ -28,10 +28,14 @@
   <script type="text/babel" data-presets="react" src="app/components/ChartsSheet.jsx"></script>
   <script type="text/babel" data-presets="react" src="app/components/LicenseSheet.jsx"></script>
   <script type="text/babel" data-presets="react" src="app/components/ChangelogSheet.jsx"></script>
+  <script type="text/babel" data-presets="react" src="app/components/ChatSheet.jsx"></script>
+  <script type="text/babel" data-presets="react" src="app/components/HistorySheet.jsx"></script>
+  <script type="text/babel" data-presets="react" src="app/components/VoiceMate.jsx"></script>
   <script type="text/babel" data-presets="react" src="app/components/App.jsx"></script>
   <script type="text/babel" data-presets="react">
     const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<LLMUsageApp />);
+    const mode = (typeof window.api?.mode === 'function') ? window.api.mode() : 'popover';
+    root.render(mode === 'voicemate' ? <VoiceMate /> : <LLMUsageApp />);
   </script>
 </body>
 </html>

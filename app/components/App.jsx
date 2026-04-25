@@ -1,6 +1,236 @@
 // Live app — fetches real data via window.api (preload bridge).
 const { useState: useStateA, useEffect: useEffectA, useCallback } = React;
 
+// MainMenuSheet — slide-up sheet collapsing the previously-scrunched header
+// row (refresh / chat / analytics / history / settings / license). Each row
+// is a tappable card with icon + label + description. Mirrors the styling
+// of other sheets in the app (ApiKeysSheet, ChangelogSheet) so it feels
+// native to the rest of the surface.
+function MainMenuSheet({
+  open, onClose,
+  isPro, isAi,
+  chatOpen, chartsOpen, sheetOpen,
+  onOpenChat, onOpenVoice, onOpenHistory, onOpenAnalytics,
+  onOpenApiKeys, onOpenBudgets, onOpenExport,
+  onOpenPricing, onOpenChangelog,
+  onOpenSettings, onOpenLicense,
+}) {
+  const t = TOKENS.color;
+
+  const chatIcon = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+    </svg>
+  );
+  const historyIcon = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+    </svg>
+  );
+  const micIcon = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 1 0 6 0V5a3 3 0 0 0-3-3z"/>
+      <path d="M19 11a7 7 0 0 1-14 0"/>
+      <path d="M12 18v4"/>
+    </svg>
+  );
+  const analyticsIcon = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/>
+    </svg>
+  );
+  const keysIcon = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="15" r="4"/>
+      <path d="M10.85 12.15 19 4"/>
+      <path d="m18 5 3 3"/>
+      <path d="m15 8 3 3"/>
+    </svg>
+  );
+  const bellIcon = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9z"/>
+      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>
+    </svg>
+  );
+  const downloadIcon = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+      <polyline points="7 10 12 15 17 10"/>
+      <line x1="12" y1="15" x2="12" y2="3"/>
+    </svg>
+  );
+  const tagIcon = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/>
+      <line x1="7" y1="7" x2="7.01" y2="7"/>
+    </svg>
+  );
+  const sparkleIcon = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="12 2 15 8.5 22 9.3 17 14.1 18.2 21 12 17.7 5.8 21 7 14.1 2 9.3 9 8.5 12 2"/>
+    </svg>
+  );
+  const settingsIcon = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1A2 2 0 1 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
+    </svg>
+  );
+  const lockIcon = (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="11" width="16" height="10" rx="2"/>
+      <path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+    </svg>
+  );
+
+  // Each row carries a `tier` ('free' | 'max' | 'max-ai') so the badge is a
+  // permanent indicator of what unlocks the surface — not a lock state. Free
+  // rows render no badge. Max rows render a "Max" pill. Max + AI rows render
+  // a "Max + AI" pill. Locked Max-tier rows whose user lacks the tier route
+  // through onOpenLicense via the wiring below.
+  const items = [
+    { id: 'chat',       tier: 'max-ai', label: 'Chat',
+      sublabel: isAi ? 'Talk to OpenAI, Claude, or Gemini (text)' : 'Direct chat with the major models',
+      icon: chatIcon, onClick: onOpenChat, active: chatOpen },
+    { id: 'voice',      tier: 'max-ai', label: 'Voice AI',
+      sublabel: isAi ? 'Hands-free brainstorming · ⌘⇧V from anywhere' : 'Speak to AI · always-on mic conversation',
+      icon: micIcon, onClick: onOpenVoice },
+    { id: 'history',    tier: 'max-ai', label: 'Chat history',
+      sublabel: 'Past conversations + Claude Code sessions',
+      icon: historyIcon, onClick: onOpenHistory },
+    { id: 'analytics',  tier: 'max',    label: 'Analytics',
+      sublabel: 'Charts, projections, exports',
+      icon: analyticsIcon, onClick: onOpenAnalytics, active: chartsOpen },
+    { id: 'apikeys',    tier: 'max',    label: 'API keys',
+      sublabel: 'OpenAI · Anthropic · OpenRouter admin keys',
+      icon: keysIcon, onClick: onOpenApiKeys },
+    { id: 'budgets',    tier: 'max',    label: 'Budget alerts',
+      sublabel: 'Daily spend thresholds + summary',
+      icon: bellIcon, onClick: onOpenBudgets },
+    { id: 'export',     tier: 'max',    label: 'Export data',
+      sublabel: 'CSV / JSON of trends, totals, models',
+      icon: downloadIcon, onClick: onOpenExport },
+    { id: 'pricing',    tier: 'free',   label: 'View current pricing',
+      sublabel: 'Per-model rates, refreshed daily',
+      icon: tagIcon, onClick: onOpenPricing },
+    { id: 'changelog',  tier: 'free',   label: "What's new",
+      sublabel: 'Recent Tokenly releases',
+      icon: sparkleIcon, onClick: onOpenChangelog },
+    { id: 'settings',   tier: 'free',   label: 'Settings',
+      sublabel: 'Appearance, menu bar, launch at login',
+      icon: settingsIcon, onClick: onOpenSettings, active: sheetOpen },
+    { id: 'license',    tier: 'free',   label: isAi ? 'Tokenly Max + AI' : isPro ? 'Tokenly Max' : 'Unlock Tokenly Max',
+      sublabel: isAi ? 'Lifetime activation · view or remove your code'
+              : isPro ? 'Lifetime activation · upgrade to Max + AI'
+              : '$5.99 for Max · $8.99 for Max + AI · both lifetime',
+      icon: lockIcon, onClick: onOpenLicense },
+  ];
+
+  return (
+    <React.Fragment>
+      <div
+        onClick={onClose}
+        style={{
+          position: 'absolute', inset: 0,
+          background: 'rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(6px)',
+          opacity: open ? 1 : 0,
+          pointerEvents: open ? 'auto' : 'none',
+          transition: 'opacity .2s',
+          zIndex: 50,
+        }}
+      />
+      <section
+        style={{
+          position: 'absolute', left: 0, right: 0, bottom: 0,
+          background: 'linear-gradient(180deg, #15151f 0%, #0d0d14 100%)',
+          borderTop: `1px solid ${t.cardBorderStrong}`,
+          borderRadius: '16px 16px 0 0',
+          padding: '10px 16px 18px',
+          transform: open ? 'translateY(0)' : 'translateY(100%)',
+          transition: 'transform .25s cubic-bezier(0.2, 0.9, 0.3, 1)',
+          zIndex: 60,
+          maxHeight: '92%',
+          overflowY: 'auto',
+        }}
+      >
+        <SheetMinimize onClick={onClose} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>Menu</div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {items.map((it) => (
+            <MenuRow key={it.id} t={t} item={it} />
+          ))}
+        </div>
+      </section>
+    </React.Fragment>
+  );
+}
+window.MainMenuSheet = MainMenuSheet;
+
+function MenuRow({ t, item }) {
+  const [hov, setHov] = React.useState(false);
+  // Uniform card style — no gold glow, no tinted border. The tier badge
+  // alongside the label is the only visual indicator of what unlocks a row.
+  const bg = hov ? t.cardHover : t.card;
+  const border = `1px solid ${item.active ? t.cardBorderStrong : t.cardBorder}`;
+  const iconColor = hov || item.active ? t.text : t.textDim;
+  const tierBadge = item.tier === 'max-ai' ? 'Max + AI'
+                  : item.tier === 'max'    ? 'Max'
+                  : null;
+  return (
+    <button
+      onClick={item.onClick}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        background: bg, border, borderRadius: 11,
+        padding: '11px 13px', cursor: 'pointer', textAlign: 'left',
+        fontFamily: 'inherit', color: t.text,
+        display: 'flex', alignItems: 'center', gap: 12,
+        transition: 'background .12s, border-color .12s',
+      }}
+    >
+      <div style={{
+        width: 32, height: 32, borderRadius: 9, flexShrink: 0,
+        background: 'rgba(255,255,255,0.04)',
+        border: '1px solid rgba(255,255,255,0.06)',
+        color: iconColor,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        transition: 'color .12s',
+      }}>
+        {item.icon}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, color: t.text, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {item.label}
+          {tierBadge && (
+            <span style={{
+              fontSize: 8.5, fontWeight: 700, letterSpacing: '0.06em',
+              padding: '2px 6px', borderRadius: 4, textTransform: 'uppercase',
+              color: '#1a1408', lineHeight: 1,
+              background: 'linear-gradient(135deg, #ffd772, #e8a441)',
+              border: '1px solid rgba(232,164,65,0.55)',
+            }}>{tierBadge}</span>
+          )}
+        </div>
+        <div style={{ fontSize: 10.5, color: t.textDim, marginTop: 2, lineHeight: 1.4 }}>
+          {item.sublabel}
+        </div>
+      </div>
+      <span style={{ color: t.textMute, flexShrink: 0, display: 'inline-flex' }}>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 6l6 6-6 6"/>
+        </svg>
+      </span>
+    </button>
+  );
+}
+window.MenuRow = MenuRow;
+
 function LLMUsageApp() {
   const mode = (typeof window.api?.mode === 'function') ? window.api.mode() : 'desktop';
   const isPopover = mode === 'popover';
@@ -13,6 +243,27 @@ function LLMUsageApp() {
   const [chartsOpen, setChartsOpen] = useStateA(false);
   const [licenseOpen, setLicenseOpen] = useStateA(false);
   const [changelogOpen, setChangelogOpen] = useStateA(false);
+  const [chatOpen, setChatOpen] = useStateA(false);
+  const [historyOpen, setHistoryOpen] = useStateA(false);
+  const [menuOpen, setMenuOpen] = useStateA(false);
+  // Voice controller registered by ChatSheet on mount. Held in a ref so
+  // hotkey handlers always see the latest controller without re-registering.
+  const voiceCtrlRef = React.useRef(null);
+  // Pending hotkey action to fire once ChatSheet mounts. Set when a global
+  // hotkey arrives while chat is closed; consumed when registerVoiceController
+  // is called below.
+  const pendingHotkeyRef = React.useRef(null);
+  const flushPendingHotkey = useCallback(() => {
+    const ctrl = voiceCtrlRef.current;
+    const pending = pendingHotkeyRef.current;
+    if (!ctrl || !pending) return;
+    pendingHotkeyRef.current = null;
+    if (pending === 'ptt' && typeof ctrl.pttToggle === 'function') ctrl.pttToggle();
+  }, []);
+  const registerVoiceController = useCallback((ctrl) => {
+    voiceCtrlRef.current = ctrl;
+    if (ctrl) flushPendingHotkey();
+  }, [flushPendingHotkey]);
   const [appVersion, setAppVersion] = useStateA(null);
   // "Last seen" version is the version the user has already viewed in the
   // What's-new sheet. If app version is newer, the post-update banner shows.
@@ -25,7 +276,11 @@ function LLMUsageApp() {
     try { localStorage.setItem('lastSeenVersion', v); } catch {}
   };
   const [licenseState, setLicenseState] = useStateA({ tier: 'free', license: null });
-  const isPro = licenseState.tier === 'max';
+  // 'max' tier and 'max-ai' tier both unlock the original Max features
+  // (admin-API providers, analytics, exports, budgets). 'max-ai' adds chat
+  // and voice on top.
+  const isPro = licenseState.tier === 'max' || licenseState.tier === 'max-ai';
+  const isAi = licenseState.tier === 'max-ai';
   const [spinning, setSpinning] = useStateA(false);
   const [days, setDays] = useStateA(() => {
     try { return parseInt(localStorage.getItem('windowDays') || '30', 10) || 30; } catch { return 30; }
@@ -76,6 +331,24 @@ function LLMUsageApp() {
   const updateTraySource = (v) => {
     setTraySource(v);
     try { localStorage.setItem('traySource', v); } catch {}
+  };
+  // What the menu bar title shows: 'tokens' (existing), 'quota' (a quota %),
+  // 'both' (tokens + quota), or 'off'. Backwards-compatible default: tokens.
+  const [trayContent, setTrayContent] = useStateA(() => {
+    try { return localStorage.getItem('trayContent') || 'tokens'; } catch { return 'tokens'; }
+  });
+  const updateTrayContent = (v) => {
+    setTrayContent(v);
+    try { localStorage.setItem('trayContent', v); } catch {}
+  };
+  // Which quota window to show when trayContent includes a quota. Encoded as
+  // `<provider>:<window>` — e.g. 'claude-code:5h', 'codex:7d', 'gemini-cli:row0'.
+  const [trayQuota, setTrayQuota] = useStateA(() => {
+    try { return localStorage.getItem('trayQuota') || 'claude-code:5h'; } catch { return 'claude-code:5h'; }
+  });
+  const updateTrayQuota = (v) => {
+    setTrayQuota(v);
+    try { localStorage.setItem('trayQuota', v); } catch {}
   };
 
   const t = TOKENS.color;
@@ -168,6 +441,38 @@ function LLMUsageApp() {
     if (window.api?.onRefreshNow) window.api.onRefreshNow(() => refreshAll());
     if (window.api?.onOpenPricing) window.api.onOpenPricing(() => setPricingOpen(true));
   }, [refreshAll]);
+
+  // Global voice / chat hotkeys. Main process registers the OS shortcuts;
+  // here we handle the renderer-side dispatch. Opens the chat sheet first if
+  // needed (Max-only — silently dropped on Free), then either dispatches
+  // immediately to the registered voice controller, or stashes the action
+  // until ChatSheet mounts and registers itself.
+  // Read live state via refs so the IPC listener can register exactly once
+  // — the underlying ipcRenderer.on doesn't expose a clean unsubscribe.
+  const isAiRef = React.useRef(isAi);
+  useEffectA(() => { isAiRef.current = isAi; }, [isAi]);
+  const chatOpenRef = React.useRef(chatOpen);
+  useEffectA(() => { chatOpenRef.current = chatOpen; }, [chatOpen]);
+  useEffectA(() => {
+    if (!window.api?.onChatHotkey) return;
+    window.api.onChatHotkey(({ kind }) => {
+      // Chat + voice hotkeys gated on Max + AI. Without it, surface the
+      // upsell sheet rather than silently dropping the gesture.
+      if (!isAiRef.current) {
+        setLicenseOpen(true);
+        return;
+      }
+      pendingHotkeyRef.current = kind;
+      if (!chatOpenRef.current) setChatOpen(true);
+      flushPendingHotkey();
+    });
+    if (window.api?.onLicenseUpsell) {
+      window.api.onLicenseUpsell(() => setLicenseOpen(true));
+    }
+    // No cleanup — preload's ipcRenderer.on doesn't return a removeListener.
+    // Effect deps intentionally empty so we register exactly once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Load Tokenly Max license state on mount.
   useEffectA(() => {
@@ -342,11 +647,11 @@ function LLMUsageApp() {
   useEffectA(() => {
     if (!window.api?.setTrayTitle) return;
     const handle = setTimeout(() => {
-      const title = computeTrayTitle(trayMode, traySource, usage, days, isPro);
+      const title = computeTrayTitle({ mode: trayMode, source: traySource, content: trayContent, quotaKey: trayQuota, usage, days, isPro });
       window.api.setTrayTitle(title);
     }, 250);
     return () => clearTimeout(handle);
-  }, [trayMode, traySource, usage, days, isPro]);
+  }, [trayMode, traySource, trayContent, trayQuota, usage, days, isPro]);
 
   const keysPresent = Object.values(meta).some((m) => m?.present);
   const isFirstRun = booted && !keysPresent;
@@ -438,7 +743,8 @@ function LLMUsageApp() {
                 lineHeight: 1,
                 fontVariantNumeric: 'tabular-nums',
                 flexShrink: 0,
-              }}>Max</span>
+                whiteSpace: 'nowrap',
+              }}>{isAi ? 'Max + AI' : 'Max'}</span>
             )}
           </div>
           <div className="tky-header-meta" style={{ fontSize: 11, color: t.textMute, fontVariantNumeric: 'tabular-nums', display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
@@ -462,28 +768,33 @@ function LLMUsageApp() {
         </div>
         <div style={{ display: 'flex', gap: 6, WebkitAppRegion: 'no-drag', alignItems: 'center', flexShrink: 0 }}>
           <IconBtn onClick={() => refreshAll()} title="Refresh" spinning={spinning}>{Icons.refresh}</IconBtn>
-          {/* Analytics — Max feature. When unlocked, wrap in a gold-tinted
-              container so the entry point reads as a premium surface. */}
+          {/* Voice AI shortcut — opens the standalone voice window. Gated on
+              Max + AI; falls back to the license upsell otherwise. The ⌘⇧V
+              global hotkey does the same thing from anywhere in macOS. */}
           <div style={{
-            background: isPro ? 'linear-gradient(135deg, rgba(255,215,114,0.2), rgba(232,164,65,0.08))' : 'transparent',
-            border: isPro ? '1px solid rgba(232,164,65,0.5)' : '1px solid transparent',
+            background: isAi ? 'linear-gradient(135deg, rgba(255,215,114,0.2), rgba(232,164,65,0.08))' : 'transparent',
+            border: isAi ? '1px solid rgba(232,164,65,0.5)' : '1px solid transparent',
             borderRadius: 9,
-            boxShadow: isPro ? '0 0 10px rgba(232,164,65,0.25)' : 'none',
+            boxShadow: isAi ? '0 0 10px rgba(232,164,65,0.25)' : 'none',
             display: 'inline-flex', padding: 0,
             transition: 'box-shadow .15s, border-color .15s',
           }}>
             <IconBtn
-              onClick={() => isPro ? setChartsOpen(true) : setLicenseOpen(true)}
-              title={isPro ? 'Analytics' : 'Analytics — unlock with Tokenly Max'}
-              active={chartsOpen}
+              onClick={() => isAi ? window.api.voiceMateOpen() : setLicenseOpen(true)}
+              title={isAi ? 'Voice AI · ⌘⇧V' : 'Voice AI — unlock with Max + AI'}
             >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={isPro ? '#ffd772' : 'currentColor'} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 3v18h18" />
-                <path d="M7 14l4-4 3 3 5-6" />
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={isAi ? '#ffd772' : 'currentColor'} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 1 0 6 0V5a3 3 0 0 0-3-3z"/>
+                <path d="M19 11a7 7 0 0 1-14 0"/>
+                <path d="M12 18v4"/>
               </svg>
             </IconBtn>
           </div>
-          <IconBtn onClick={() => setSheetOpen(true)} title="API Keys" active={sheetOpen}>{Icons.gear}</IconBtn>
+          <IconBtn onClick={() => setMenuOpen(true)} title="Menu" active={menuOpen}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 6h18M3 12h18M3 18h18"/>
+            </svg>
+          </IconBtn>
           {isPopover ? (
             <IconBtn onClick={() => window.api.detachWindow()} title="Detach to desktop window">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
@@ -630,30 +941,48 @@ function LLMUsageApp() {
         )}
       </main>
 
+      <MainMenuSheet
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        isPro={isPro}
+        isAi={isAi}
+        chatOpen={chatOpen}
+        chartsOpen={chartsOpen}
+        sheetOpen={sheetOpen}
+        onOpenChat={() => { setMenuOpen(false); isAi ? setChatOpen(true) : setLicenseOpen(true); }}
+        onOpenVoice={() => { setMenuOpen(false); isAi ? window.api.voiceMateOpen() : setLicenseOpen(true); }}
+        onOpenHistory={() => { setMenuOpen(false); isAi ? setHistoryOpen(true) : setLicenseOpen(true); }}
+        onOpenAnalytics={() => { setMenuOpen(false); isPro ? setChartsOpen(true) : setLicenseOpen(true); }}
+        onOpenApiKeys={() => { setMenuOpen(false); isPro ? setApiKeysOpen(true) : setLicenseOpen(true); }}
+        onOpenBudgets={() => { setMenuOpen(false); isPro ? setBudgetsOpen(true) : setLicenseOpen(true); }}
+        onOpenExport={() => { setMenuOpen(false); isPro ? setExportOpen(true) : setLicenseOpen(true); }}
+        onOpenPricing={() => { setMenuOpen(false); setPricingOpen(true); }}
+        onOpenChangelog={() => { setMenuOpen(false); setChangelogOpen(true); }}
+        onOpenSettings={() => { setMenuOpen(false); setSheetOpen(true); }}
+        onOpenLicense={() => { setMenuOpen(false); setLicenseOpen(true); }}
+      />
       <SettingsSheet
         open={sheetOpen}
         onClose={() => setSheetOpen(false)}
-        savedKeys={savedKeys}
+        onBack={() => { setSheetOpen(false); setMenuOpen(true); }}
         badgeStyle={badgeStyle}
         onBadgeStyleChange={updateBadgeStyle}
         trayMode={trayMode}
         onTrayModeChange={updateTrayMode}
         traySource={traySource}
         onTraySourceChange={updateTraySource}
+        trayContent={trayContent}
+        onTrayContentChange={updateTrayContent}
+        trayQuota={trayQuota}
+        onTrayQuotaChange={updateTrayQuota}
         currentDays={days}
-        onOpenPricing={() => { setSheetOpen(false); setPricingOpen(true); }}
-        onOpenBudgets={() => { setSheetOpen(false); setBudgetsOpen(true); }}
-        onOpenApiKeys={() => { setSheetOpen(false); setApiKeysOpen(true); }}
-        onOpenExport={() => { setSheetOpen(false); setExportOpen(true); }}
-        onOpenLicense={() => { setSheetOpen(false); setLicenseOpen(true); }}
-        onOpenChangelog={() => { setSheetOpen(false); setChangelogOpen(true); }}
-        appVersion={appVersion}
+        usage={usage}
         isPro={isPro}
       />
       <ApiKeysSheet
         open={apiKeysOpen && isPro}
         onClose={() => setApiKeysOpen(false)}
-        onBack={() => { setApiKeysOpen(false); setSheetOpen(true); }}
+        onBack={() => { setApiKeysOpen(false); setMenuOpen(true); }}
         savedKeys={savedKeys}
         onSave={onSaveKey}
         onRemove={onRemoveKey}
@@ -662,23 +991,24 @@ function LLMUsageApp() {
       <PricingSheet
         open={pricingOpen}
         onClose={() => setPricingOpen(false)}
-        onBack={() => { setPricingOpen(false); setSheetOpen(true); }}
+        onBack={() => { setPricingOpen(false); setMenuOpen(true); }}
       />
       <ChangelogSheet
         open={changelogOpen}
         onClose={() => setChangelogOpen(false)}
+        onBack={() => { setChangelogOpen(false); setMenuOpen(true); }}
         currentVersion={appVersion}
         onMarkSeen={markVersionSeen}
       />
       <BudgetsSheet
         open={budgetsOpen && isPro}
         onClose={() => setBudgetsOpen(false)}
-        onBack={() => { setBudgetsOpen(false); setSheetOpen(true); }}
+        onBack={() => { setBudgetsOpen(false); setMenuOpen(true); }}
       />
       <ExportSheet
         open={exportOpen && isPro}
         onClose={() => setExportOpen(false)}
-        onBack={() => { setExportOpen(false); setSheetOpen(true); }}
+        onBack={() => { setExportOpen(false); setMenuOpen(true); }}
         usage={usage}
         meta={meta}
         days={days}
@@ -687,7 +1017,7 @@ function LLMUsageApp() {
       <ChartsSheet
         open={chartsOpen && isPro}
         onClose={() => setChartsOpen(false)}
-        onBack={() => setChartsOpen(false)}
+        onBack={() => { setChartsOpen(false); setMenuOpen(true); }}
         usage={usage}
         days={days}
         onDaysChange={updateDays}
@@ -700,13 +1030,34 @@ function LLMUsageApp() {
         <LicenseSheet
           open={licenseOpen}
           onClose={() => setLicenseOpen(false)}
-          onBack={() => { setLicenseOpen(false); setSheetOpen(true); }}
+          onBack={() => { setLicenseOpen(false); setMenuOpen(true); }}
           tier={licenseState.tier}
           license={licenseState.license}
           onLicenseChange={setLicenseState}
           onOpenExternal={onOpenExternal}
         />
       )}
+      {/* ChatSheet stays mounted while open so streaming + voice state survive
+          the user closing/reopening the popover. Hotkeys also need a mounted
+          listener to work when triggered globally before the sheet has been
+          opened in this session — see the global-hotkey effect below. */}
+      <ChatSheet
+        open={chatOpen && isAi}
+        onClose={() => setChatOpen(false)}
+        onBack={() => { setChatOpen(false); setMenuOpen(true); }}
+        onOpenExternal={onOpenExternal}
+        isPro={isAi}
+        onOpenHistory={() => { setChatOpen(false); setHistoryOpen(true); }}
+        onOpenVoice={() => window.api.voiceMateOpen()}
+        registerVoiceController={registerVoiceController}
+      />
+      <HistorySheet
+        open={historyOpen && isAi}
+        onClose={() => setHistoryOpen(false)}
+        onBack={() => { setHistoryOpen(false); setMenuOpen(true); }}
+        onOpenExternal={onOpenExternal}
+        isPro={isAi}
+      />
     </div>
     </BadgeStyleContext.Provider>
   );
@@ -724,8 +1075,13 @@ window.LLMUsageApp = LLMUsageApp;
 //               Uses totals with the SAME formula as the card's rightSide
 //               label (input + output + cache_read + cached), so the tray
 //               and card agree exactly when the same source is selected.
-function computeTrayTitle(mode, source, usage, days, isPro) {
+function computeTrayTitle({ mode, source, content = 'tokens', quotaKey, usage, days, isPro }) {
+  // 'off' overrides everything — empty title.
   if (!mode || mode === 'off') return '';
+  // Tokens-only users with content=tokens use the original behavior; users
+  // who picked a content mode that excludes tokens skip the token block.
+  const wantTokens = content === 'tokens' || content === 'both';
+  const wantQuota  = content === 'quota'  || content === 'both';
 
   // Free users: API providers are Max-locked, so never roll their numbers
   // into the tray title. If the current source is an API provider, blank
@@ -734,37 +1090,6 @@ function computeTrayTitle(mode, source, usage, days, isPro) {
   const sourceProv = PROVIDERS.find((p) => p.id === source);
   if (!isPro && sourceProv && !sourceProv.keyless) return '';
 
-  const providerList = (source === 'all')
-    ? (isPro ? PROVIDERS : PROVIDERS.filter((p) => p.keyless))
-    : PROVIDERS.filter((p) => p.id === source);
-
-  // Match the card's rightSide formula exactly.
-  const cardTokens = (t) =>
-      (t.input      || 0)
-    + (t.output     || 0)
-    + (t.cache_read || 0)
-    + (t.cached     || 0);
-
-  let windowTotal = 0;
-  let todayTotal = 0;
-  for (const p of providerList) {
-    const u = usage[p.id];
-    if (!u || u === 'loading' || !u.ok || !u.data) continue;
-    const t = u.data.totals || {};
-
-    // "Last Xd" uses the exact same formula the card displays.
-    windowTotal += cardTokens(t);
-
-    // "Today" = last UTC-day bucket from the trend. Note: trend buckets are
-    // provider-specific (each provider includes slightly different token
-    // categories in its trend), so "Today" is close but not identical to a
-    // card slice. "Today" is intentionally UTC-calendar-day-so-far.
-    const trend = u.data.trend || [];
-    if (trend.length) {
-      todayTotal += trend[trend.length - 1] || 0;
-    }
-  }
-
   const fmt = (n) => {
     if (!Number.isFinite(n) || n < 0) return '0';
     if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -772,21 +1097,81 @@ function computeTrayTitle(mode, source, usage, days, isPro) {
     if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
     return String(Math.round(n));
   };
-
-  // Short range label for the rolling window — matches what the popover's
-  // range picker shows ("24h", "7d", "30d", etc.).
   const rangeLabel = ({
     1: '24h', 7: '7d', 14: '14d', 30: '30d', 90: '90d', 180: '180d',
   })[days] || (days ? days + 'd' : 'range');
 
-  const tag = (source === 'all')
-    ? ''
-    : (PROVIDERS.find((p) => p.id === source)?.abbr || '') + ' · ';
+  // ----- Tokens block (existing logic, broken out for composability) -----
+  let tokensSegment = '';
+  if (wantTokens) {
+    const providerList = (source === 'all')
+      ? (isPro ? PROVIDERS : PROVIDERS.filter((p) => p.keyless))
+      : PROVIDERS.filter((p) => p.id === source);
 
-  if (mode === 'today')  return ' ' + tag + 'Today ' + fmt(todayTotal);
-  if (mode === 'window') return ' ' + tag + rangeLabel + ' ' + fmt(windowTotal);
-  if (mode === 'hybrid') return ' ' + tag + 'Today ' + fmt(todayTotal) + ' · ' + rangeLabel + ' ' + fmt(windowTotal);
-  return '';
+    const cardTokens = (t) =>
+        (t.input      || 0)
+      + (t.output     || 0)
+      + (t.cache_read || 0)
+      + (t.cached     || 0);
+
+    let windowTotal = 0;
+    let todayTotal = 0;
+    for (const p of providerList) {
+      const u = usage[p.id];
+      if (!u || u === 'loading' || !u.ok || !u.data) continue;
+      const t = u.data.totals || {};
+      windowTotal += cardTokens(t);
+      const trend = u.data.trend || [];
+      if (trend.length) todayTotal += trend[trend.length - 1] || 0;
+    }
+    const tag = (source === 'all') ? '' : (PROVIDERS.find((p) => p.id === source)?.abbr || '') + ' · ';
+    if (mode === 'today')   tokensSegment = tag + 'Today ' + fmt(todayTotal);
+    else if (mode === 'window') tokensSegment = tag + rangeLabel + ' ' + fmt(windowTotal);
+    else if (mode === 'hybrid') tokensSegment = tag + 'Today ' + fmt(todayTotal) + ' · ' + rangeLabel + ' ' + fmt(windowTotal);
+  }
+
+  // ----- Quota block — pulls the configured window out of provider quota -----
+  let quotaSegment = '';
+  if (wantQuota && quotaKey) {
+    const [provId, win] = String(quotaKey).split(':');
+    const q = usage[provId]?.data?.quota;
+    // Skip silently if the chosen quota is unavailable (no creds, transient
+    // outage, etc.). The popover card already explains why.
+    if (q && !q._unavailable) {
+      let row = null;
+      let label = '';
+      if (win === '5h')   { row = q.fiveHour;     label = '5h'; }
+      else if (win === '7d') { row = q.sevenDay;  label = '7d'; }
+      else if (win === 'opus') { row = q.sevenDayOpus; label = 'Opus 7d'; }
+      else if (win.startsWith('row')) {
+        const idx = Number(win.slice(3)) || 0;
+        const r = Array.isArray(q.rows) ? q.rows[idx] : null;
+        if (r) { row = r.win; label = r.label || `bucket ${idx}`; }
+      }
+      if (row && Number.isFinite(row.usedPercent)) {
+        const provAbbr = PROVIDERS.find((p) => p.id === provId)?.abbr || '';
+        const pct = Math.round(row.usedPercent);
+        // Reset countdown — same compact format the popover uses.
+        let resetIn = '';
+        if (row.resetsAt) {
+          const ms = Date.parse(row.resetsAt) - Date.now();
+          if (ms > 0) {
+            const mins = Math.round(ms / 60000);
+            if (mins < 60) resetIn = ` · ${mins}m`;
+            else if (mins < 24 * 60) resetIn = ` · ${Math.floor(mins / 60)}h`;
+            else resetIn = ` · ${Math.floor(mins / 60 / 24)}d`;
+          }
+        }
+        quotaSegment = `${provAbbr} ${label} ${pct}%${resetIn}`;
+      }
+    }
+  }
+
+  const parts = [];
+  if (tokensSegment) parts.push(tokensSegment);
+  if (quotaSegment)  parts.push(quotaSegment);
+  if (!parts.length) return '';
+  return ' ' + parts.join(' · ');
 }
 
 function timeAgo(ms) {

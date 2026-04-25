@@ -67,14 +67,15 @@ Tokenly is a native macOS menu-bar app that shows you — **live, in real time**
 
 It answers the question every AI-powered developer asks at the end of the month: *"Where did all that money go?"*
 
-Two use cases it covers:
+Three use cases it covers:
 
 1. **Subscription usage** (Claude Max, ChatGPT Team, Cursor-adjacent tools) — see the list-price value of tokens you're burning inside a flat-rate plan.
 2. **Admin-API spend** (OpenAI, Anthropic, OpenRouter) — authoritative per-day dollars without waiting for the month-end invoice.
+3. **Direct AI access** *(Max + AI)* — chat with OpenAI / Claude / Gemini in-app, talk to a hands-free voice AI with `⌘⇧V` from anywhere, web search built in, and conversation memory that's aware of your live Tokenly usage data.
 
 Every card is labeled either **list-price estimate** (amber, tokens-first) or **actual billed spend** (green, dollars-first) so you always know which number is real money.
 
-> **It's a measurement tool, not a gateway.** Tokenly never touches your prompts, your responses, or your API traffic. It reads usage data that already exists on your Mac or queries your provider's own billing endpoints directly. Your keys stay on your device, encrypted via the macOS Keychain.
+> **It's a measurement tool first, a chat surface second.** Tokenly never touches your prompts, your responses, or your API traffic — chat and voice requests go directly from your Mac to the provider you've configured using your own keys. Tokenly never proxies. Your keys stay on your device, encrypted via the macOS Keychain.
 
 ---
 
@@ -197,6 +198,26 @@ The trend sparkline also splits — prior half rendered dimmed, current half bri
 - **CSV or JSON** — export the current window as Daily trend (one row per day per provider with every token category), Provider totals, or Per-model breakdown.
 - **Live preview** — see the first rows before saving; copy to clipboard or save via native dialog.
 
+### Tokenly Chat *(Tokenly Max + AI)*
+
+- **Direct chat** with OpenAI (GPT-5, 4o, o3 family), Anthropic (Opus 4.7, Sonnet 4.6, Haiku 4.5), and Google (Gemini 2.5 Pro / Flash, 2.0 Flash) using your own API keys.
+- **Web search** built in — toggle a globe in the composer and the model grounds its reply with live results plus clickable source citations (OpenAI Responses API, Anthropic `web_search_20250305`, or Gemini Google Search depending on provider).
+- **Live dictation** — click the mic or press ⌘⇧Space anywhere; Tokenly streams ~2-second Whisper passes and updates the composer text in place so you see what was heard. Press Enter to send.
+- **Favorite models** — star the ones you actually use across providers; favorites pin to the top of every model picker (chat sheet + voice window).
+- **Conversation history** — every chat auto-saves, searchable, with per-conversation cost and tokens-by-model breakdown.
+
+### Voice AI *(Tokenly Max + AI)*
+
+- **⌘⇧V from anywhere** opens a frameless, always-on-top voice window that listens continuously with VAD turn-taking — speak, pause, hear the reply spoken back, keep going.
+- **Conversation memory** — on every voice turn, Tokenly injects a compact digest of your past conversations into the system prompt so the AI stays aware of what you've been working on across sessions.
+- **Usage-aware** — the voice AI also gets a live JSON snapshot of your current Tokenly numbers (per-provider tokens, costs, today's burn, top models, quota %), so you can ask *"how much have I spent on Claude this week?"* and get a real answer with real figures.
+- **Live cost meter** — a footer shows the running cost of the current voice conversation (STT + LLM + TTS), all billed directly to your provider account.
+- **End → save** — closing the voice window drops the transcript into your unified Tokenly chat history.
+
+### Unified history *(Tokenly Max + AI)*
+
+- One sheet shows both Tokenly chats and your local Claude Code sessions side-by-side. Claude Code transcripts are filtered to the readable user→final-response exchange — no tool plumbing or thinking noise.
+
 ### Power-user touches
 
 - **OpenRouter info strip** — green ⚡ bar showing account balance (`$X of $Y left`), per-API-key spend cap when configured, and rate-limit info on hover.
@@ -313,27 +334,38 @@ This is the part every Tokenly user asks about. Short answers:
 
 ## Pricing
 
-| | **Tokenly Free** | **Tokenly Max** |
-|---|---|---|
-| **Price** | Free forever | **$5.99** — one-time, lifetime |
-| Claude Code (CLI + Desktop) | ✓ | ✓ |
-| Codex (CLI + Desktop) | ✓ | ✓ |
-| Gemini CLI | ✓ | ✓ |
-| Pricing sheet & live rate updates | ✓ | ✓ |
-| Auto-update | ✓ | ✓ |
-| OpenAI API (org-wide billing) | — | ✓ |
-| Anthropic API (org-wide billing) | — | ✓ |
-| OpenRouter (activity + balance) | — | ✓ |
-| Menu-bar counter for API sources | — | ✓ |
-| Budget alerts (50% / 80% / 100%) | — | ✓ |
-| Daily spend summary notification | — | ✓ |
-| All future API-side features | — | ✓ |
+| | **Tokenly Free** | **Tokenly Max** | **Tokenly Max + AI** |
+|---|---|---|---|
+| **Price** | Free forever | **$5.99** — one-time, lifetime | **$8.99** — one-time, lifetime |
+| Claude Code (CLI + Desktop) | ✓ | ✓ | ✓ |
+| Codex (CLI + Desktop) | ✓ | ✓ | ✓ |
+| Gemini CLI | ✓ | ✓ | ✓ |
+| Live subscription quotas (Claude Max · ChatGPT · Gemini) | ✓ | ✓ | ✓ |
+| Pricing sheet & live rate updates | ✓ | ✓ | ✓ |
+| Auto-update | ✓ | ✓ | ✓ |
+| OpenAI API (org-wide billing) | — | ✓ | ✓ |
+| Anthropic API (org-wide billing) | — | ✓ | ✓ |
+| OpenRouter (activity + balance) | — | ✓ | ✓ |
+| Menu-bar counter for API sources | — | ✓ | ✓ |
+| Budget alerts (50% / 80% / 100%) | — | ✓ | ✓ |
+| Daily spend summary notification | — | ✓ | ✓ |
+| Analytics view + 30-day projection | — | ✓ | ✓ |
+| CSV / JSON / PDF / PNG export | — | ✓ | ✓ |
+| **Tokenly Chat** — direct chat with OpenAI / Claude / Gemini | — | — | ✓ |
+| **Voice AI window** — hands-free, ⌘⇧V from anywhere | — | — | ✓ |
+| **Web search** in chat (with citations) | — | — | ✓ |
+| **Live dictation** in the composer (⌘⇧Space) | — | — | ✓ |
+| **Conversation memory** + usage-aware voice | — | — | ✓ |
+| Unified history (chats + Claude Code sessions) | — | — | ✓ |
+| All future Max + AI features | — | — | ✓ |
 
-**No subscription, no seat pricing, no usage fees.** One payment, every update for life.
+**No subscriptions, no seat pricing, no usage fees on either paid tier.** One payment, every update for life.
 
-Tokenly Max is activated with a license key you receive by email after checkout. You can re-download from [trytokenly.app/recover](https://trytokenly.app/recover) for a full year if you lose the original email.
+Both tiers are activated with a license key you receive by email after checkout. Recover at [trytokenly.app/recover](https://trytokenly.app/recover) anytime if you lose the email.
 
-[**→ Get Tokenly Max**](https://trytokenly.app)
+> **Note on AI usage:** Tokenly Chat and the Voice AI window send requests directly from your Mac to the provider you've configured (OpenAI / Anthropic / Google) using your own API keys. Tokenly never proxies your requests — chat and voice API usage bills directly to your own provider account at their published rates. The $8.99 covers the Tokenly software surface only.
+
+[**→ Get Tokenly Max**](https://trytokenly.app/max) · [**→ Get Tokenly Max + AI**](https://trytokenly.app/max-ai)
 
 ---
 

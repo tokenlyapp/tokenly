@@ -1,7 +1,7 @@
 {
   "name": "tokenly",
   "productName": "Tokenly",
-  "version": "1.11.0",
+  "version": "2.0.0",
   "description": "Tokenly — live monitor for your AI API spend across OpenAI, Anthropic, DeepSeek, and OpenRouter.",
   "main": "main.js",
   "scripts": {
@@ -47,6 +47,9 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "notarize": true,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Tokenly uses the microphone for the Chat voice features (push-to-talk dictation and voice conversation mode). Audio is sent to OpenAI's Whisper API using your own key, then discarded."
+      },
       "target": [
         {
           "target": "dmg",

@@ -18,7 +18,11 @@ function loadKeys() {
     const plain = safeStorage.decryptString(buf);
     const obj = JSON.parse(plain);
     // Prune keys for providers we no longer support.
-    const allowed = new Set(['openai', 'anthropic', 'openrouter', 'claude-code', 'codex', 'gemini-cli']);
+    const allowed = new Set([
+      'openai', 'anthropic', 'openrouter', 'claude-code', 'codex', 'gemini-cli',
+      // Tokenly Chat regular API keys (separate from admin keys above).
+      'chat-openai', 'chat-anthropic', 'chat-google',
+    ]);
     for (const k of Object.keys(obj)) if (!allowed.has(k)) delete obj[k];
     return obj;
   } catch {
@@ -83,7 +87,7 @@ function makeTrayIcon() {
 function createPopoverWindow() {
   if (popoverWin && !popoverWin.isDestroyed()) return popoverWin;
   popoverWin = new BrowserWindow({
-    width: 460, height: 640,
+    width: 690, height: 640,
     show: false, frame: false, resizable: false, movable: false,
     skipTaskbar: true, alwaysOnTop: true,
     backgroundColor: '#0a0a0f',
@@ -129,7 +133,7 @@ function createDesktopWindow() {
     desktopWin.show(); desktopWin.focus(); return desktopWin;
   }
   desktopWin = new BrowserWindow({
-    width: 460, height: 720,
+    width: 690, height: 720,
     minWidth: 380, minHeight: 520,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 14, y: 14 },
@@ -859,16 +863,19 @@ ipcMain.handle('alerts:maybe-fire-summary', (_e, payload) => {
 // Tokenly Max license (paywall for API sources + budget alerts)
 // ---------------------------------------------------------------------------
 // Storage: ~/Library/Application Support/Tokenly/license.json
-// Tier model: 'free' (default) | 'max' (unlocked).
+// Tier model: 'free' (default) | 'max' (unlocked) | 'max-ai' (unlocked + AI).
 //
 // Free keeps the three local sources (Claude Code, Codex CLI, Gemini CLI),
 // Settings, and the read-only pricing sheet. Max unlocks OpenAI API,
-// Anthropic API, OpenRouter, and budget alerts.
+// Anthropic API, OpenRouter, and budget alerts. Max + AI is a monthly
+// subscription that adds Tokenly Chat (text + web search + voice).
 //
-// Activation: the renderer passes the Stripe checkout session_id the user
-// pasted into Settings → Unlock Tokenly Max. We POST it to the Netlify
-// edge function at /api/license/verify, which calls Stripe directly and
-// returns the license metadata on a paid, non-refunded session.
+// Activation: the renderer passes a Stripe identifier (one-time checkout
+// session_id for max, subscription session_id or sub_id for max-ai). We POST
+// it to the Netlify edge function at /api/license/verify, which calls Stripe
+// directly and returns the license metadata on a paid, non-refunded session.
+
+const VALID_TIERS = new Set(['max', 'max-ai']);
 
 function licensePath() { return path.join(app.getPath('userData'), 'license.json'); }
 
@@ -877,7 +884,7 @@ function loadLicense() {
     const p = licensePath();
     if (!fs.existsSync(p)) return null;
     const data = JSON.parse(fs.readFileSync(p, 'utf8'));
-    if (data && data.tier === 'max' && data.session_id) return data;
+    if (data && VALID_TIERS.has(data.tier) && data.session_id) return data;
   } catch {}
   return null;
 }
@@ -893,7 +900,7 @@ function saveLicense(license) {
 
 ipcMain.handle('license:get', () => {
   const lic = loadLicense();
-  return { tier: lic ? 'max' : 'free', license: lic };
+  return { tier: lic ? lic.tier : 'free', license: lic };
 });
 
 const LICENSE_VERIFY_URL = 'https://trytokenly.app/api/license/verify';
@@ -915,21 +922,22 @@ ipcMain.handle('license:activate', async (_e, code) => {
       signal: AbortSignal.timeout(15_000),
     });
     const body = await res.json().catch(() => ({}));
-    if (!res.ok || !body?.ok || body?.tier !== 'max') {
+    if (!res.ok || !body?.ok || !VALID_TIERS.has(body?.tier)) {
       return { ok: false, reason: body?.reason || ('http_' + res.status) };
     }
     const license = {
-      tier: 'max',
+      tier: body.tier,
       session_id: trimmed,
       activated_at: Date.now(),
       email: body.email || null,
       purchased_at: body.purchased_at || null,
+      subscription_id: body.subscription_id || null,
       last_verified_at: Date.now(),
       verify_source: 'stripe',
     };
     const saved = saveLicense(license);
     if (!saved.ok) return { ok: false, reason: 'save_failed', error: saved.error };
-    return { ok: true, tier: 'max', license };
+    return { ok: true, tier: license.tier, license };
   } catch (e) {
     return { ok: false, reason: 'network', error: String(e?.message || e) };
   }
@@ -958,9 +966,10 @@ async function backgroundVerifyLicense() {
       signal: AbortSignal.timeout(15_000),
     });
     const body = await res.json().catch(() => ({}));
-    const REVOKE_REASONS = new Set(['refunded', 'not_paid', 'invalid_session', 'invalid_format']);
-    if (body && body.ok && body.tier === 'max') {
-      saveLicense({ ...lic, last_verified_at: Date.now() });
+    const REVOKE_REASONS = new Set(['refunded', 'not_paid', 'invalid_session', 'invalid_format', 'subscription_canceled', 'subscription_past_due']);
+    if (body && body.ok && VALID_TIERS.has(body.tier)) {
+      // Server can also upgrade/downgrade tier (e.g. user upgraded from max to max-ai).
+      saveLicense({ ...lic, tier: body.tier, last_verified_at: Date.now() });
       return;
     }
     if (body && body.ok === false && REVOKE_REASONS.has(body.reason)) {
@@ -1846,10 +1855,55 @@ function mapOAuthWindow(win) {
   };
 }
 
+// Last-known-good quota cache + stale-serve. Anthropic's /api/oauth/usage is
+// a private endpoint and occasionally 429s, 5xxs, or just blips on the network
+// — when it does, we don't want the whole quota block to vanish from the UI.
+// On any transient failure we serve the most recent successful response with
+// a stale flag, and the renderer surfaces a subtle "Xm ago" indicator.
+//
+// Cache TTLs:
+//   FRESH (5 min)    — under this, treat as live data, no indicator
+//   STALE (2h)       — over fresh but under this, serve with stale indicator
+//   MAX (24h)        — over this, drop the cache entirely
+const oauthQuotaCache = new Map(); // key: provider id → { data, ts }
+const OAUTH_CACHE_FRESH_MS = 5 * 60 * 1000;
+const OAUTH_CACHE_STALE_MS = 2 * 60 * 60 * 1000;
+const OAUTH_CACHE_MAX_MS   = 24 * 60 * 60 * 1000;
+
+function readQuotaCache(key) {
+  const entry = oauthQuotaCache.get(key);
+  if (!entry) return null;
+  const ageMs = Date.now() - entry.ts;
+  if (ageMs > OAUTH_CACHE_MAX_MS) { oauthQuotaCache.delete(key); return null; }
+  return { data: entry.data, ageMs };
+}
+function writeQuotaCache(key, data) {
+  if (data) oauthQuotaCache.set(key, { data, ts: Date.now() });
+}
+// Wraps a successful fetch with cache write + the live shape; wraps a failure
+// with cache lookup + stale indicator. `reason` describes why a fresh fetch
+// failed so the UI can show an actionable message when no cache exists.
+function withQuotaCache(key, freshData, failureReason) {
+  if (freshData) {
+    writeQuotaCache(key, freshData);
+    return freshData;
+  }
+  const cached = readQuotaCache(key);
+  if (cached) {
+    return { ...cached.data, _stale: true, _ageMs: cached.ageMs, _reason: failureReason || null };
+  }
+  // No cache and fresh fetch failed — return an unavailable marker so the
+  // renderer can display a tasteful notice instead of an empty block.
+  if (failureReason) return { _unavailable: true, _reason: failureReason };
+  return null;
+}
+
 async function fetchClaudeOAuthQuota() {
   const loaded = loadClaudeOAuthCredentials();
+  // No credentials at all = user not on a subscription. Suppress entirely.
   if (!loaded) return null;
   let creds = loaded.creds;
+
   // Refresh if expiring within 60s. Falls back to the stale token if refresh
   // fails (still might work for a few seconds), and bails entirely if the
   // refresh fails AND the token is already past its expiry.
@@ -1862,12 +1916,14 @@ async function fetchClaudeOAuthQuota() {
       creds = { ...creds, ...refreshed };
       persistClaudeCredentials(loaded.raw, loaded.source, refreshed, loaded.creds);
     } else if (Date.now() >= creds.expiresAtMs) {
-      return null;
+      return withQuotaCache('claude-code', null, 'auth_expired');
     }
   }
   // The /api/oauth/usage endpoint requires user:profile scope (CLI tokens
   // with only user:inference cannot call it).
-  if (creds.scopes.length && !creds.scopes.includes('user:profile')) return null;
+  if (creds.scopes.length && !creds.scopes.includes('user:profile')) {
+    return withQuotaCache('claude-code', null, 'scopes_insufficient');
+  }
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 5000);
@@ -1882,12 +1938,21 @@ async function fetchClaudeOAuthQuota() {
       },
       signal: ctrl.signal,
     });
-  } catch { clearTimeout(timeout); return null; }
+  } catch {
+    clearTimeout(timeout);
+    return withQuotaCache('claude-code', null, 'network');
+  }
   clearTimeout(timeout);
-  if (!res || !res.ok) return null;
+  if (!res) return withQuotaCache('claude-code', null, 'network');
+  if (!res.ok) {
+    // 401/403 mean tokens are bad — surface re-auth. Other statuses are likely
+    // transient (429 rate limit, 5xx outage) so we'll serve cache.
+    const reason = (res.status === 401 || res.status === 403) ? 'auth_expired' : 'network';
+    return withQuotaCache('claude-code', null, reason);
+  }
 
   let body;
-  try { body = await res.json(); } catch { return null; }
+  try { body = await res.json(); } catch { return withQuotaCache('claude-code', null, 'network'); }
 
   const fiveHour       = mapOAuthWindow(body.five_hour);
   const sevenDay       = mapOAuthWindow(body.seven_day);
@@ -1910,16 +1975,18 @@ async function fetchClaudeOAuthQuota() {
     };
   }
 
-  if (!fiveHour && !sevenDay && !sevenDaySonnet && !sevenDayOpus && !extraUsage) return null;
+  if (!fiveHour && !sevenDay && !sevenDaySonnet && !sevenDayOpus && !extraUsage) {
+    return withQuotaCache('claude-code', null, 'empty_response');
+  }
 
-  return {
+  return withQuotaCache('claude-code', {
     fiveHour,
     sevenDay,
     sevenDaySonnet,
     sevenDayOpus,
     extraUsage,
     planTier: planLabelFromTier(creds.rateLimitTier),
-  };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2105,7 +2172,7 @@ async function fetchCodexOAuthQuota() {
       creds = { ...creds, accessToken: refreshed.accessToken, idToken: refreshed.idToken, refreshToken: refreshed.refreshToken };
       persistCodexCredentials(loaded.raw, refreshed);
     } else if (msLeft <= 0) {
-      return null;
+      return withQuotaCache('codex', null, 'auth_expired');
     }
   }
 
@@ -2123,12 +2190,19 @@ async function fetchCodexOAuthQuota() {
     };
     if (creds.accountId) headers['ChatGPT-Account-Id'] = creds.accountId;
     res = await fetch(CODEX_USAGE_URL, { headers, signal: ctrl.signal });
-  } catch { clearTimeout(timeout); return null; }
+  } catch {
+    clearTimeout(timeout);
+    return withQuotaCache('codex', null, 'network');
+  }
   clearTimeout(timeout);
-  if (!res || !res.ok) return null;
+  if (!res) return withQuotaCache('codex', null, 'network');
+  if (!res.ok) {
+    const reason = (res.status === 401 || res.status === 403) ? 'auth_expired' : 'network';
+    return withQuotaCache('codex', null, reason);
+  }
 
   let body;
-  try { body = await res.json(); } catch { return null; }
+  try { body = await res.json(); } catch { return withQuotaCache('codex', null, 'network'); }
 
   const rl = body && body.rate_limit;
   const fiveHour = rl ? mapCodexWindow(rl.primary_window)   : null;
@@ -2145,14 +2219,16 @@ async function fetchCodexOAuthQuota() {
     };
   }
 
-  if (!fiveHour && !sevenDay && !credits) return null;
+  if (!fiveHour && !sevenDay && !credits) {
+    return withQuotaCache('codex', null, 'empty_response');
+  }
 
-  return {
+  return withQuotaCache('codex', {
     fiveHour,
     sevenDay,
     credits,
     planTier: planLabelFromCodexTier(body && body.plan_type),
-  };
+  });
 }
 
 async function fetchClaudeCodeLocal(days) {
@@ -2770,18 +2846,23 @@ async function fetchGeminiOAuthQuota() {
       signal: ctrl.signal,
     });
     clearTimeout(to);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const reason = (res.status === 401 || res.status === 403) ? 'auth_expired' : 'network';
+      return withQuotaCache('gemini-cli', null, reason);
+    }
     const j = await res.json();
     buckets = Array.isArray(j.buckets) ? j.buckets : [];
-  } catch { return null; }
+  } catch { return withQuotaCache('gemini-cli', null, 'network'); }
 
   const rows = buildGeminiQuotaRows(buckets);
-  if (!rows.length && !tierLabel) return null;
+  if (!rows.length && !tierLabel) {
+    return withQuotaCache('gemini-cli', null, 'empty_response');
+  }
 
-  return {
+  return withQuotaCache('gemini-cli', {
     rows, // [{ key, label, win: { usedPercent, resetsAt } }]
     planTier: tierLabel,
-  };
+  });
 }
 
 async function fetchGeminiCLILocal(days) {
@@ -2936,3 +3017,1016 @@ function startGeminiWatcher() {
     geminiWatcher.on('error', () => { try { geminiWatcher.close(); } catch {} geminiWatcher = null; });
   } catch { /* non-fatal */ }
 }
+
+// ===========================================================================
+// Tokenly Chat — direct-to-API chat with OpenAI / Anthropic / Google
+// ===========================================================================
+// Three concerns kept together so the file stays grep-able:
+//   1. Chat keys (separate from admin/usage keys above — chat uses regular keys)
+//   2. Streaming completions per provider (SSE parsing)
+//   3. Conversation persistence on disk
+//   4. Voice: Whisper STT + OpenAI TTS
+//   5. Global push-to-talk + voice-mode hotkeys
+// All API calls happen here in main so keys never cross to renderer.
+
+const CHAT_PROVIDERS = ['openai', 'anthropic', 'google'];
+function chatKeyId(p) { return 'chat-' + p; }
+
+function loadChatKeys() {
+  const all = loadKeys();
+  const out = {};
+  for (const p of CHAT_PROVIDERS) {
+    const v = all[chatKeyId(p)];
+    if (v) out[p] = v;
+  }
+  return out;
+}
+
+ipcMain.handle('chat:keys-meta', () => {
+  const all = loadKeys();
+  const meta = {};
+  for (const p of CHAT_PROVIDERS) {
+    const v = all[chatKeyId(p)];
+    meta[p] = v ? { present: true, tail: v.slice(-4) } : { present: false };
+  }
+  return meta;
+});
+ipcMain.handle('chat:set-key', (_e, provider, value) => {
+  if (!CHAT_PROVIDERS.includes(provider)) throw new Error('unknown provider');
+  const all = loadKeys();
+  if (!value) delete all[chatKeyId(provider)]; else all[chatKeyId(provider)] = value;
+  saveKeys(all);
+  return true;
+});
+
+// Curated default model lists — kept short so the dropdown is scannable.
+// User can also type a custom model id via the "Custom…" input.
+const CHAT_MODELS = {
+  openai: [
+    { id: 'gpt-5',          label: 'GPT-5',        desc: 'Most capable' },
+    { id: 'gpt-5-mini',     label: 'GPT-5 mini',   desc: 'Fast + cheap' },
+    { id: 'gpt-4o',         label: 'GPT-4o',       desc: 'Multimodal' },
+    { id: 'gpt-4o-mini',    label: 'GPT-4o mini',  desc: 'Cheapest' },
+    { id: 'o3',             label: 'o3',           desc: 'Reasoning' },
+    { id: 'o3-mini',        label: 'o3-mini',      desc: 'Fast reasoning' },
+  ],
+  anthropic: [
+    { id: 'claude-opus-4-7',         label: 'Claude Opus 4.7',   desc: 'Most capable' },
+    { id: 'claude-sonnet-4-6',       label: 'Claude Sonnet 4.6', desc: 'Balanced' },
+    { id: 'claude-haiku-4-5',        label: 'Claude Haiku 4.5',  desc: 'Fast + cheap' },
+  ],
+  google: [
+    { id: 'gemini-2.5-pro',     label: 'Gemini 2.5 Pro',    desc: 'Most capable' },
+    { id: 'gemini-2.5-flash',   label: 'Gemini 2.5 Flash',  desc: 'Fast' },
+    { id: 'gemini-2.0-flash',   label: 'Gemini 2.0 Flash',  desc: 'Cheapest' },
+  ],
+};
+ipcMain.handle('chat:list-models', () => CHAT_MODELS);
+
+// --- SSE line splitter ------------------------------------------------------
+// Web Streams arrive as Uint8Array chunks; SSE events are delimited by blank
+// lines, with each event made up of `event:` / `data:` lines. We accumulate
+// into a buffer, split on \n\n, and yield events.
+async function* sseEvents(response) {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buf = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const raw = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const ev = { event: 'message', data: '' };
+      for (const line of raw.split('\n')) {
+        if (line.startsWith('event:')) ev.event = line.slice(6).trim();
+        else if (line.startsWith('data:')) ev.data += (ev.data ? '\n' : '') + line.slice(5).trim();
+      }
+      if (ev.data || ev.event !== 'message') yield ev;
+    }
+  }
+}
+
+// --- Provider-specific streamers --------------------------------------------
+// Each streams: { type: 'delta', text } or { type: 'usage', input, output, cost }
+// or { type: 'done' } or { type: 'error', message }.
+// `signal` is an AbortSignal so we can cancel mid-stream.
+
+async function* streamOpenAI({ key, model, messages, system, signal }) {
+  const body = {
+    model,
+    messages: [
+      ...(system ? [{ role: 'system', content: system }] : []),
+      ...messages,
+    ],
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+  let res;
+  try {
+    res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    yield { type: 'error', message: err?.message || String(err) };
+    return;
+  }
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    yield { type: 'error', message: `OpenAI ${res.status}: ${txt.slice(0, 300)}` };
+    return;
+  }
+  let usageEvt = null;
+  try {
+    for await (const ev of sseEvents(res)) {
+      if (ev.data === '[DONE]') break;
+      let json;
+      try { json = JSON.parse(ev.data); } catch { continue; }
+      const choice = json.choices && json.choices[0];
+      const delta = choice && choice.delta && choice.delta.content;
+      if (delta) yield { type: 'delta', text: delta };
+      if (json.usage) usageEvt = json.usage;
+    }
+  } catch (err) {
+    if (err?.name !== 'AbortError') {
+      yield { type: 'error', message: err?.message || String(err) };
+      return;
+    }
+  }
+  if (usageEvt) {
+    yield {
+      type: 'usage',
+      input: usageEvt.prompt_tokens || 0,
+      output: usageEvt.completion_tokens || 0,
+      cached: usageEvt.prompt_tokens_details?.cached_tokens || 0,
+    };
+  }
+  yield { type: 'done' };
+}
+
+// OpenAI Responses API — used when web search is enabled. Different SSE shape
+// than chat.completions; emits typed events like response.output_text.delta.
+async function* streamOpenAIResponses({ key, model, messages, system, webSearch, signal }) {
+  const body = {
+    model,
+    input: messages.map((m) => ({ role: m.role, content: m.content })),
+    ...(system ? { instructions: system } : {}),
+    ...(webSearch ? { tools: [{ type: 'web_search_preview' }] } : {}),
+    stream: true,
+  };
+  let res;
+  try {
+    res = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    yield { type: 'error', message: err?.message || String(err) };
+    return;
+  }
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    yield { type: 'error', message: `OpenAI ${res.status}: ${txt.slice(0, 300)}` };
+    return;
+  }
+  let usageEvt = null;
+  let citations = [];
+  try {
+    for await (const ev of sseEvents(res)) {
+      if (!ev.data || ev.data === '[DONE]') continue;
+      let json;
+      try { json = JSON.parse(ev.data); } catch { continue; }
+      const t = json.type || ev.event;
+      if (t === 'response.output_text.delta' && typeof json.delta === 'string') {
+        yield { type: 'delta', text: json.delta };
+      } else if (t === 'response.completed' && json.response) {
+        usageEvt = json.response.usage;
+        // Pull URL citations from any finished web_search annotation set.
+        const out = Array.isArray(json.response.output) ? json.response.output : [];
+        for (const item of out) {
+          const parts = Array.isArray(item.content) ? item.content : [];
+          for (const p of parts) {
+            const anns = Array.isArray(p.annotations) ? p.annotations : [];
+            for (const a of anns) {
+              if (a.type === 'url_citation' && a.url) {
+                citations.push({ url: a.url, title: a.title || a.url });
+              }
+            }
+          }
+        }
+      } else if (t === 'response.failed' || t === 'response.incomplete' || t === 'error') {
+        const m = json.response?.error?.message || json.error?.message || 'response failed';
+        yield { type: 'error', message: `OpenAI: ${m}` };
+        return;
+      }
+    }
+  } catch (err) {
+    if (err?.name !== 'AbortError') {
+      yield { type: 'error', message: err?.message || String(err) };
+      return;
+    }
+  }
+  if (citations.length) yield { type: 'citations', items: citations };
+  if (usageEvt) {
+    yield {
+      type: 'usage',
+      input: usageEvt.input_tokens || 0,
+      output: usageEvt.output_tokens || 0,
+      cached: usageEvt.input_tokens_details?.cached_tokens || 0,
+    };
+  }
+  yield { type: 'done' };
+}
+
+async function* streamAnthropic({ key, model, messages, system, webSearch, signal }) {
+  const body = {
+    model,
+    max_tokens: 4096,
+    stream: true,
+    messages,
+    ...(system ? { system } : {}),
+    ...(webSearch ? { tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }] } : {}),
+  };
+  let res;
+  try {
+    res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    yield { type: 'error', message: err?.message || String(err) };
+    return;
+  }
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    yield { type: 'error', message: `Anthropic ${res.status}: ${txt.slice(0, 300)}` };
+    return;
+  }
+  let inputTokens = 0, outputTokens = 0, cachedRead = 0, cacheCreate = 0;
+  const citations = [];
+  try {
+    for await (const ev of sseEvents(res)) {
+      let json;
+      try { json = JSON.parse(ev.data); } catch { continue; }
+      if (ev.event === 'message_start' && json.message?.usage) {
+        inputTokens = json.message.usage.input_tokens || 0;
+        cachedRead = json.message.usage.cache_read_input_tokens || 0;
+        cacheCreate = json.message.usage.cache_creation_input_tokens || 0;
+      }
+      if (ev.event === 'content_block_delta' && json.delta?.type === 'text_delta') {
+        yield { type: 'delta', text: json.delta.text || '' };
+      }
+      // Capture web_search citations from completed search-result blocks.
+      if (ev.event === 'content_block_start' && json.content_block?.type === 'web_search_tool_result') {
+        const results = json.content_block.content;
+        if (Array.isArray(results)) {
+          for (const r of results) {
+            if (r.url) citations.push({ url: r.url, title: r.title || r.url });
+          }
+        }
+      }
+      if (ev.event === 'message_delta' && json.usage) {
+        outputTokens = json.usage.output_tokens || outputTokens;
+      }
+    }
+  } catch (err) {
+    if (err?.name !== 'AbortError') {
+      yield { type: 'error', message: err?.message || String(err) };
+      return;
+    }
+  }
+  if (citations.length) yield { type: 'citations', items: citations };
+  yield { type: 'usage', input: inputTokens, output: outputTokens, cached: cachedRead, cache_creation: cacheCreate };
+  yield { type: 'done' };
+}
+
+async function* streamGoogle({ key, model, messages, system, webSearch, signal }) {
+  // Gemini API uses contents[] with role 'user' | 'model'; system goes as systemInstruction.
+  const contents = messages.map((m) => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }],
+  }));
+  const body = {
+    contents,
+    ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+    ...(webSearch ? { tools: [{ google_search: {} }] } : {}),
+  };
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key)}`;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    yield { type: 'error', message: err?.message || String(err) };
+    return;
+  }
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    yield { type: 'error', message: `Google ${res.status}: ${txt.slice(0, 300)}` };
+    return;
+  }
+  let lastUsage = null;
+  const citations = [];
+  try {
+    for await (const ev of sseEvents(res)) {
+      let json;
+      try { json = JSON.parse(ev.data); } catch { continue; }
+      const parts = json.candidates?.[0]?.content?.parts;
+      if (parts) {
+        for (const p of parts) {
+          if (p.text) yield { type: 'delta', text: p.text };
+        }
+      }
+      const grounding = json.candidates?.[0]?.groundingMetadata;
+      if (grounding && Array.isArray(grounding.groundingChunks)) {
+        for (const g of grounding.groundingChunks) {
+          const w = g.web;
+          if (w?.uri) citations.push({ url: w.uri, title: w.title || w.uri });
+        }
+      }
+      if (json.usageMetadata) lastUsage = json.usageMetadata;
+    }
+  } catch (err) {
+    if (err?.name !== 'AbortError') {
+      yield { type: 'error', message: err?.message || String(err) };
+      return;
+    }
+  }
+  if (citations.length) yield { type: 'citations', items: citations };
+  if (lastUsage) {
+    yield {
+      type: 'usage',
+      input: lastUsage.promptTokenCount || 0,
+      output: (lastUsage.candidatesTokenCount || 0) + (lastUsage.thoughtsTokenCount || 0),
+      cached: lastUsage.cachedContentTokenCount || 0,
+    };
+  }
+  yield { type: 'done' };
+}
+
+const STREAMERS = { openai: streamOpenAI, anthropic: streamAnthropic, google: streamGoogle };
+// When web search is on for OpenAI, route through the Responses API instead.
+const STREAMERS_WEBSEARCH = {
+  openai: streamOpenAIResponses, anthropic: streamAnthropic, google: streamGoogle,
+};
+
+// --- Cost computation -------------------------------------------------------
+// Mirrors the existing fetcher logic: regex-match model id against pricing
+// table, fall back to provider default. Returns USD.
+function pricingForChat(provider, modelId) {
+  const tables = getPricingTablesForRenderer();
+  // Tokenly's pricing table uses 'claude' as the key for anthropic models.
+  const key = provider === 'anthropic' ? 'claude' : provider === 'google' ? 'gemini' : 'openai';
+  const block = tables.providers[key];
+  if (!block) return null;
+  const lc = String(modelId).toLowerCase();
+  for (const m of block.models) {
+    try {
+      const re = new RegExp(m.match || '', 'i');
+      if (re.test(lc)) return { input: m.input, output: m.output, cache_read: block.multipliers?.cache_read || 0.1 };
+    } catch {}
+  }
+  return { input: block.default.input, output: block.default.output, cache_read: block.multipliers?.cache_read || 0.1 };
+}
+function costUSD(provider, modelId, usage) {
+  const p = pricingForChat(provider, modelId);
+  if (!p) return 0;
+  const cached = usage.cached || 0;
+  const billedInput = Math.max(0, (usage.input || 0) - cached);
+  return (
+    (billedInput / 1e6) * p.input +
+    (cached     / 1e6) * p.input * (p.cache_read || 0.1) +
+    ((usage.output || 0) / 1e6) * p.output
+  );
+}
+
+// --- Stream router (IPC) ----------------------------------------------------
+const activeStreams = new Map(); // streamId -> AbortController
+
+// Defense-in-depth: chat + voice IPCs check the license tier directly so
+// even a UI bypass can't reach the streamers without an active Max + AI sub.
+function requireMaxAi() {
+  const lic = loadLicense();
+  return !!(lic && lic.tier === 'max-ai');
+}
+
+ipcMain.handle('chat:stream', async (e, opts) => {
+  const { streamId, provider, model, messages, system, webSearch } = opts || {};
+  const wc = e.sender;
+  const send = (payload) => { try { wc.send('chat:stream-event', { streamId, ...payload }); } catch {} };
+
+  if (!requireMaxAi()) { send({ type: 'error', message: 'Tokenly Chat requires the Max + AI subscription.' }); return; }
+  const map = webSearch ? STREAMERS_WEBSEARCH : STREAMERS;
+  if (!map[provider]) { send({ type: 'error', message: 'unknown provider' }); return; }
+  const keys = loadKeys();
+  const key = keys[chatKeyId(provider)];
+  if (!key) { send({ type: 'error', message: 'no_key' }); return; }
+  if (!Array.isArray(messages) || messages.length === 0) { send({ type: 'error', message: 'no messages' }); return; }
+
+  const ctrl = new AbortController();
+  activeStreams.set(streamId, ctrl);
+
+  try {
+    let totalText = '';
+    let usage = null;
+    let citations = null;
+    for await (const evt of map[provider]({ key, model, messages, system, webSearch, signal: ctrl.signal })) {
+      if (evt.type === 'delta') {
+        totalText += evt.text;
+        send({ type: 'delta', text: evt.text });
+      } else if (evt.type === 'usage') {
+        usage = evt;
+      } else if (evt.type === 'citations') {
+        citations = evt.items;
+        send({ type: 'citations', items: evt.items });
+      } else if (evt.type === 'error') {
+        send({ type: 'error', message: evt.message });
+        return;
+      }
+    }
+    const cost = usage ? costUSD(provider, model, usage) : 0;
+    send({ type: 'done', text: totalText, usage: usage || null, cost, citations });
+  } catch (err) {
+    if (err?.name === 'AbortError') send({ type: 'aborted' });
+    else send({ type: 'error', message: err?.message || String(err) });
+  } finally {
+    activeStreams.delete(streamId);
+  }
+});
+
+ipcMain.handle('chat:cancel', (_e, streamId) => {
+  const ctrl = activeStreams.get(streamId);
+  if (ctrl) { try { ctrl.abort(); } catch {} }
+  activeStreams.delete(streamId);
+  return true;
+});
+
+// --- Conversation persistence -----------------------------------------------
+// One JSON file per conversation under userData/conversations/.
+// Sidecar: an index.json with lightweight metadata for fast list rendering.
+function chatDir() {
+  const dir = path.join(app.getPath('userData'), 'conversations');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  return dir;
+}
+function safeId(id) {
+  return /^[A-Za-z0-9_-]{6,40}$/.test(String(id || '')) ? id : null;
+}
+ipcMain.handle('chat:list-conversations', () => {
+  const dir = chatDir();
+  let files = [];
+  try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'index.json'); } catch {}
+  const out = [];
+  for (const f of files) {
+    try {
+      const raw = fs.readFileSync(path.join(dir, f), 'utf8');
+      const c = JSON.parse(raw);
+      out.push({
+        id: c.id, title: c.title || 'Untitled',
+        provider: c.provider, model: c.model,
+        createdAt: c.createdAt, updatedAt: c.updatedAt,
+        messageCount: (c.messages || []).length,
+        totals: c.totals || { input: 0, output: 0, cost: 0 },
+        voiceMode: !!c.voiceMode,
+        source: 'tokenly',
+      });
+    } catch {}
+  }
+  out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  return out;
+});
+ipcMain.handle('chat:load-conversation', (_e, id) => {
+  const safe = safeId(id);
+  if (!safe) return null;
+  try {
+    const raw = fs.readFileSync(path.join(chatDir(), safe + '.json'), 'utf8');
+    return JSON.parse(raw);
+  } catch { return null; }
+});
+ipcMain.handle('chat:save-conversation', (_e, conv) => {
+  if (!conv || typeof conv !== 'object') return { ok: false, error: 'bad payload' };
+  const safe = safeId(conv.id);
+  if (!safe) return { ok: false, error: 'bad id' };
+  try {
+    const file = path.join(chatDir(), safe + '.json');
+    fs.writeFileSync(file, JSON.stringify(conv, null, 2));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+ipcMain.handle('chat:delete-conversation', (_e, id) => {
+  const safe = safeId(id);
+  if (!safe) return { ok: false };
+  try { fs.unlinkSync(path.join(chatDir(), safe + '.json')); return { ok: true }; }
+  catch (err) { return { ok: false, error: err?.message || String(err) }; }
+});
+ipcMain.handle('chat:reveal-folder', () => {
+  const dir = chatDir();
+  shell.openPath(dir);
+  return dir;
+});
+
+// --- Voice: transcribe (Whisper) and TTS (OpenAI) ---------------------------
+// Both use the user's own chat-openai key — voice usage bills directly to
+// the user's OpenAI account, same as text chat. Tokenly never proxies the
+// audio; bytes go from the renderer (base64) → main → OpenAI directly.
+ipcMain.handle('chat:transcribe', async (_e, { audioB64, mime, filename }) => {
+  if (!requireMaxAi()) return { ok: false, error: 'Tokenly Chat requires the Max + AI subscription.' };
+  const keys = loadKeys();
+  const key = keys[chatKeyId('openai')];
+  if (!key) return { ok: false, error: 'no_openai_key' };
+  if (!audioB64) return { ok: false, error: 'no audio' };
+  try {
+    const buf = Buffer.from(audioB64, 'base64');
+    const blob = new Blob([buf], { type: mime || 'audio/webm' });
+    const form = new FormData();
+    form.append('file', blob, filename || 'speech.webm');
+    form.append('model', 'whisper-1');
+    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${key}` },
+      body: form,
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      return { ok: false, error: `Whisper ${res.status}: ${txt.slice(0, 300)}` };
+    }
+    const json = await res.json();
+    return { ok: true, text: (json.text || '').trim() };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('chat:tts', async (_e, { text, voice = 'alloy', model = 'tts-1', format = 'mp3' }) => {
+  if (!requireMaxAi()) return { ok: false, error: 'Tokenly Chat requires the Max + AI subscription.' };
+  const keys = loadKeys();
+  const key = keys[chatKeyId('openai')];
+  if (!key) return { ok: false, error: 'no_openai_key' };
+  if (!text) return { ok: false, error: 'no_text' };
+  try {
+    const res = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model, voice, input: text.slice(0, 4000), response_format: format }),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      return { ok: false, error: `TTS ${res.status}: ${txt.slice(0, 300)}` };
+    }
+    const ab = await res.arrayBuffer();
+    return { ok: true, audioB64: Buffer.from(ab).toString('base64'), mime: format === 'mp3' ? 'audio/mpeg' : 'audio/' + format };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+// --- Voice prefs (primary AI, voice, hotkeys) -------------------------------
+function loadVoicePrefs() {
+  try {
+    const p = path.join(app.getPath('userData'), 'voice-prefs.json');
+    if (!fs.existsSync(p)) return {};
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch { return {}; }
+}
+function saveVoicePrefs(obj) {
+  try {
+    const p = path.join(app.getPath('userData'), 'voice-prefs.json');
+    fs.writeFileSync(p, JSON.stringify(obj, null, 2));
+  } catch {}
+}
+ipcMain.handle('chat:get-prefs', () => {
+  const cur = loadVoicePrefs();
+  return {
+    primary: cur.primary || { provider: 'openai', model: 'gpt-4o-mini' },
+    voice: cur.voice || 'alloy',
+    pttHotkey: cur.pttHotkey || 'CommandOrControl+Shift+Space',
+    voiceModeHotkey: cur.voiceModeHotkey || 'CommandOrControl+Shift+V',
+    hotkeysEnabled: cur.hotkeysEnabled !== false,
+    // Favorite models per provider — pinned to the top of every model picker
+    // (chat sheet + voice mate). Empty = no favorites set yet, picker shows
+    // the full curated list as before.
+    favoriteModels: cur.favoriteModels || { openai: [], anthropic: [], google: [] },
+  };
+});
+
+// Returns a compact snapshot of the user's current usage data so VoiceMate
+// can answer questions like "what's my Claude spend this week" or "how
+// close am I to my Max 5h limit?". Mirrors what the popover cards display
+// but flattened into a JSON shape the model can scan in ~3KB. We pull from
+// the same in-flight cache the popover uses so this is essentially free.
+ipcMain.handle('chat:usage-snapshot', async (_e, { days = 30 } = {}) => {
+  const keys = loadKeys();
+  const out = {
+    generatedAt: new Date().toISOString(),
+    windowDays: days,
+    providers: {},
+    totals: { input: 0, output: 0, cost: 0 },
+  };
+  // We re-use the existing `fetchUsage` per-provider with its 8s cache so a
+  // VoiceMate refresh during an active session doesn't double-hit the wire.
+  const providers = ['claude-code', 'codex', 'gemini-cli', 'openai', 'anthropic', 'openrouter'];
+  for (const provider of providers) {
+    const keyless = provider === 'claude-code' || provider === 'codex' || provider === 'gemini-cli';
+    const key = keys[provider];
+    if (!keyless && !key) continue;
+    let data;
+    try {
+      data = await fetchUsage(provider, key, days);
+    } catch { continue; }
+    if (!data) continue;
+
+    const t = data.totals || {};
+    const trend = Array.isArray(data.trend) ? data.trend : [];
+    const costTrend = Array.isArray(data.costTrend) ? data.costTrend : [];
+    const todayTokens = trend.length ? (trend[trend.length - 1] || 0) : 0;
+    const todayCost   = costTrend.length ? (costTrend[costTrend.length - 1] || 0) : 0;
+
+    // Top 5 models, ordered by cost. Trim to keep snapshot under 6KB.
+    const topModels = (Array.isArray(data.models) ? data.models : [])
+      .slice(0, 5)
+      .map((m) => ({
+        name: m.name || m.model || m.label || '?',
+        input: m.input || 0,
+        output: m.output || 0,
+        cost: m.cost || 0,
+        requests: m.requests || 0,
+      }));
+
+    // Quota — strip stale flags from the report; the model only needs the
+    // numbers, not the cache metadata.
+    let quota = null;
+    if (data.quota && !data.quota._unavailable) {
+      const q = data.quota;
+      quota = {
+        planTier: q.planTier || null,
+        windows: {},
+      };
+      if (q.fiveHour)     quota.windows.fiveHour    = { usedPercent: q.fiveHour.usedPercent, resetsAt: q.fiveHour.resetsAt };
+      if (q.sevenDay)     quota.windows.sevenDay    = { usedPercent: q.sevenDay.usedPercent, resetsAt: q.sevenDay.resetsAt };
+      if (q.sevenDayOpus) quota.windows.sevenDayOpus = { usedPercent: q.sevenDayOpus.usedPercent, resetsAt: q.sevenDayOpus.resetsAt };
+      if (Array.isArray(q.rows)) quota.windows.rows = q.rows.map((r) => ({ label: r.label, usedPercent: r.win?.usedPercent, resetsAt: r.win?.resetsAt }));
+      if (q.extraUsage)   quota.extraUsage = q.extraUsage;
+      if (q.credits)      quota.credits    = q.credits;
+    }
+
+    out.providers[provider] = {
+      tokens: {
+        input: t.input || 0,
+        output: t.output || 0,
+        cached: t.cached || 0,
+        cache_read: t.cache_read || 0,
+        reasoning: t.reasoning || 0,
+      },
+      cost: t.cost || 0,
+      requests: t.requests || 0,
+      todayTokens,
+      todayCost,
+      topModels,
+      quota,
+    };
+    out.totals.input  += t.input  || 0;
+    out.totals.output += t.output || 0;
+    out.totals.cost   += t.cost   || 0;
+  }
+
+  // Today across all providers (sum of last day's bucket).
+  let todayTotalCost = 0;
+  for (const p of Object.values(out.providers)) todayTotalCost += p.todayCost || 0;
+  out.totals.todayCost = todayTotalCost;
+
+  return out;
+});
+
+// Toggle a single model into / out of the favorites list for a provider.
+// Renderer calls this from the star icon in either model picker; we coalesce
+// the change here so both pickers can stay in sync via chatGetPrefs.
+ipcMain.handle('chat:toggle-favorite-model', (_e, { provider, model }) => {
+  if (!['openai', 'anthropic', 'google'].includes(provider)) return null;
+  if (!model || typeof model !== 'string') return null;
+  const cur = loadVoicePrefs();
+  const fav = cur.favoriteModels || { openai: [], anthropic: [], google: [] };
+  const list = Array.isArray(fav[provider]) ? fav[provider].slice() : [];
+  const idx = list.indexOf(model);
+  if (idx >= 0) list.splice(idx, 1); else list.push(model);
+  fav[provider] = list;
+  saveVoicePrefs({ ...cur, favoriteModels: fav });
+  return fav;
+});
+ipcMain.handle('chat:set-prefs', (_e, prefs) => {
+  const cur = loadVoicePrefs();
+  const next = { ...cur, ...(prefs || {}) };
+  saveVoicePrefs(next);
+  // Re-register hotkeys whenever they may have changed.
+  registerChatHotkeys();
+  return next;
+});
+
+// --- Global hotkeys ---------------------------------------------------------
+// Two shortcuts:
+//   pttHotkey       — press to record, release to send (push-to-talk)
+//   voiceModeHotkey — toggles full voice conversation mode
+// We register on app ready + whenever prefs change. Renderer handles the
+// actual recording / playback; main just relays the hotkey events.
+const { globalShortcut } = require('electron');
+let chatHotkeysRegistered = [];
+
+// Standalone voice mate window — frameless rounded panel for hands-free
+// brainstorming. Single instance: re-pressing the hotkey focuses it.
+let voiceMateWin = null;
+function openVoiceMateWindow() {
+  if (voiceMateWin && !voiceMateWin.isDestroyed()) {
+    voiceMateWin.show(); voiceMateWin.focus();
+    return voiceMateWin;
+  }
+  voiceMateWin = new BrowserWindow({
+    width: 360, height: 460,
+    show: false,
+    frame: false,
+    resizable: false,
+    movable: true,
+    skipTaskbar: false,
+    alwaysOnTop: true,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: true,
+    icon: path.join(__dirname, 'icon.png'),
+    webPreferences: commonWebPrefs,
+  });
+  voiceMateWin.loadFile('index.html', { hash: 'voicemate' });
+  // Center on the active display.
+  try {
+    const cursor = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(cursor);
+    const wb = voiceMateWin.getBounds();
+    voiceMateWin.setPosition(
+      Math.round(display.workArea.x + display.workArea.width - wb.width - 24),
+      Math.round(display.workArea.y + 80),
+      false
+    );
+  } catch {}
+  voiceMateWin.once('ready-to-show', () => { voiceMateWin.show(); voiceMateWin.focus(); });
+  voiceMateWin.on('closed', () => { voiceMateWin = null; });
+  return voiceMateWin;
+}
+
+ipcMain.handle('voicemate:close', () => {
+  if (voiceMateWin && !voiceMateWin.isDestroyed()) voiceMateWin.close();
+  return true;
+});
+
+// Renderer-side trigger for opening the voice window (used by the in-chat
+// CTA button + the main-popover Voice AI shortcut). Equivalent to pressing
+// ⌘⇧V — gated to Max + AI in the renderer so we don't open a useless window.
+ipcMain.handle('voicemate:open', () => {
+  const lic = loadLicense();
+  if (!lic || lic.tier !== 'max-ai') return { ok: false, reason: 'not_max_ai' };
+  openVoiceMateWindow();
+  return { ok: true };
+});
+
+function registerChatHotkeys() {
+  for (const acc of chatHotkeysRegistered) {
+    try { globalShortcut.unregister(acc); } catch {}
+  }
+  chatHotkeysRegistered = [];
+  const prefs = loadVoicePrefs();
+  if (prefs.hotkeysEnabled === false) return;
+
+  const ptt = prefs.pttHotkey || 'CommandOrControl+Shift+Space';
+  const vm  = prefs.voiceModeHotkey || 'CommandOrControl+Shift+V';
+
+  const surfaceChat = () => {
+    // Surface the popover (creating it if needed) so the chat sheet is visible
+    // when the user fires PTT from another app.
+    try {
+      if (popoverWin && !popoverWin.isDestroyed()) {
+        if (!popoverWin.isVisible()) { popoverJustToggled = Date.now(); positionPopoverUnderTray(); popoverWin.show(); popoverWin.focus(); }
+      } else if (desktopWin && !desktopWin.isDestroyed()) {
+        desktopWin.show(); desktopWin.focus();
+      } else {
+        createPopoverWindow();
+        popoverJustToggled = Date.now(); positionPopoverUnderTray(); popoverWin.show(); popoverWin.focus();
+      }
+    } catch {}
+  };
+
+  try {
+    if (globalShortcut.register(ptt, () => {
+      surfaceChat();
+      // Relay to renderer to toggle live transcription in the chat composer.
+      for (const w of BrowserWindow.getAllWindows()) {
+        try { w.webContents.send('chat:hotkey', { kind: 'ptt' }); } catch {}
+      }
+    })) chatHotkeysRegistered.push(ptt);
+  } catch (err) { console.warn('[hotkey] PTT register failed:', err?.message || err); }
+  try {
+    if (globalShortcut.register(vm, () => {
+      // Voice AI is gated on Max + AI. If the user lacks that tier, surface
+      // the chat window in upsell mode rather than opening a useless voice UI.
+      const lic = loadLicense();
+      if (lic && lic.tier === 'max-ai') {
+        openVoiceMateWindow();
+      } else {
+        surfaceChat();
+        for (const w of BrowserWindow.getAllWindows()) {
+          try { w.webContents.send('license-upsell', { feature: 'voice' }); } catch {}
+        }
+      }
+    })) chatHotkeysRegistered.push(vm);
+  } catch (err) { console.warn('[hotkey] VoiceMate register failed:', err?.message || err); }
+}
+app.whenReady().then(() => { try { registerChatHotkeys(); } catch (err) { console.warn('[hotkey] init failed:', err?.message || err); } });
+app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });
+
+// --- Unified history (chat conversations + parsed Claude Code sessions) -----
+// Reads ~/.claude/projects/*/*.jsonl headers to surface session-level metadata
+// without loading whole transcripts up front. The full transcript is loaded
+// on demand via chat:load-claude-session.
+ipcMain.handle('chat:list-claude-sessions', async (_e, { limit = 100 } = {}) => {
+  const root = CLAUDE_PROJECTS_DIR;
+  if (!fs.existsSync(root)) return [];
+  const out = [];
+  let projects;
+  try { projects = fs.readdirSync(root); } catch { return []; }
+  for (const proj of projects) {
+    const projDir = path.join(root, proj);
+    let entries = [];
+    try { entries = fs.readdirSync(projDir).filter((f) => f.endsWith('.jsonl')); } catch { continue; }
+    for (const f of entries) {
+      const full = path.join(projDir, f);
+      let stat;
+      try { stat = fs.statSync(full); } catch { continue; }
+      // Read the first ~32KB to grab a title hint without parsing everything.
+      let head = '';
+      try {
+        const fd = fs.openSync(full, 'r');
+        const buf = Buffer.alloc(Math.min(32 * 1024, stat.size));
+        fs.readSync(fd, buf, 0, buf.length, 0);
+        fs.closeSync(fd);
+        head = buf.toString('utf8');
+      } catch {}
+      let title = '';
+      let model = '';
+      let messageCount = 0;
+      const lines = head.split('\n');
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        try {
+          const j = JSON.parse(ln);
+          // The first user message often carries the prompt text.
+          if (!title && j.message?.role === 'user') {
+            const c = j.message.content;
+            if (typeof c === 'string') title = c.trim().slice(0, 120);
+            else if (Array.isArray(c)) {
+              const txt = c.find((p) => p.type === 'text');
+              if (txt?.text) title = String(txt.text).trim().slice(0, 120);
+            }
+          }
+          if (!model && j.message?.model) model = j.message.model;
+          if (j.type === 'user' || j.type === 'assistant') messageCount++;
+        } catch {}
+      }
+      out.push({
+        id: `claude:${proj}/${f}`,
+        title: title || f.replace(/\.jsonl$/, ''),
+        provider: 'anthropic',
+        model: model || 'claude',
+        project: decodeClaudeProject(proj),
+        createdAt: stat.birthtimeMs || stat.mtimeMs,
+        updatedAt: stat.mtimeMs,
+        messageCount, // approximate from head only
+        sizeBytes: stat.size,
+        source: 'claude-code',
+      });
+    }
+  }
+  out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  return out.slice(0, limit);
+});
+
+function decodeClaudeProject(slug) {
+  // Claude Code encodes project paths as -Users-foo-bar; reverse to /Users/foo/bar
+  // and return just the basename for compactness.
+  const decoded = String(slug).replace(/^-/, '/').replace(/-/g, '/');
+  return path.basename(decoded);
+}
+
+// Strip slash-command markup, system-reminders, and command-output blocks
+// that Claude Code injects into user messages — they're machinery, not what
+// the user typed. Plus: image placeholders we can't render.
+function cleanClaudeText(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+    .replace(/<command-name>[\s\S]*?<\/command-name>/g, '')
+    .replace(/<command-message>[\s\S]*?<\/command-message>/g, '')
+    .replace(/<command-args>[\s\S]*?<\/command-args>/g, '')
+    .replace(/<command-stdout>[\s\S]*?<\/command-stdout>/g, '')
+    .replace(/<command-stderr>[\s\S]*?<\/command-stderr>/g, '')
+    .replace(/<command-output>[\s\S]*?<\/command-output>/g, '')
+    .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, '')
+    .replace(/<local-command-stderr>[\s\S]*?<\/local-command-stderr>/g, '')
+    .replace(/<bash-input>[\s\S]*?<\/bash-input>/g, '')
+    .replace(/<bash-stdout>[\s\S]*?<\/bash-stdout>/g, '')
+    .replace(/<bash-stderr>[\s\S]*?<\/bash-stderr>/g, '')
+    .replace(/<user-prompt-submit-hook>[\s\S]*?<\/user-prompt-submit-hook>/g, '')
+    .replace(/\[Image #\d+\]/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+ipcMain.handle('chat:load-claude-session', async (_e, id) => {
+  if (!String(id || '').startsWith('claude:')) return null;
+  const rel = id.slice(7);
+  const slash = rel.indexOf('/');
+  if (slash < 0) return null;
+  const proj = rel.slice(0, slash);
+  const file = rel.slice(slash + 1);
+  if (proj.includes('..') || file.includes('..')) return null;
+  const full = path.join(CLAUDE_PROJECTS_DIR, proj, file);
+  if (!full.startsWith(CLAUDE_PROJECTS_DIR)) return null;
+  let raw;
+  try { raw = fs.readFileSync(full, 'utf8'); } catch { return null; }
+  const rawMessages = [];
+  for (const ln of raw.split('\n')) {
+    if (!ln.trim()) continue;
+    try {
+      const j = JSON.parse(ln);
+      if (j.type !== 'user' && j.type !== 'assistant') continue;
+      // Skip subagent chatter and system meta-events — neither belongs in
+      // the readable transcript.
+      if (j.isSidechain) continue;
+      if (j.isMeta) continue;
+
+      const role = j.type;
+      const c = j.message?.content;
+      let text = '';
+      if (typeof c === 'string') {
+        text = c;
+      } else if (Array.isArray(c)) {
+        // Show only the conversation surface — drop tool_use, tool_result, and
+        // thinking blocks. The user wants the readable transcript, not the
+        // agent's scratchpad.
+        text = c
+          .filter((p) => p.type === 'text' && p.text)
+          .map((p) => p.text)
+          .join('\n');
+      }
+      text = cleanClaudeText(text);
+      // Skip turns that are pure tool plumbing / markup (nothing left after cleanup).
+      if (!text) continue;
+      rawMessages.push({ role, content: text, timestamp: j.timestamp ? Date.parse(j.timestamp) : null });
+    } catch {}
+  }
+
+  // Collapse consecutive same-role runs — Claude Code emits an assistant
+  // message for each step in a tool-using sequence ("let me check…", "now
+  // I'll try…", "here's the answer"). The user wants the final response per
+  // turn, not the running narration. For each run, keep the last message
+  // (the closing reply) and discard the intermediate thinking-aloud noise.
+  const messages = [];
+  for (let i = 0; i < rawMessages.length; i++) {
+    const cur = rawMessages[i];
+    const next = rawMessages[i + 1];
+    if (next && next.role === cur.role) continue; // not the last in this run
+    messages.push(cur);
+  }
+
+  return {
+    id, source: 'claude-code',
+    title: path.basename(file, '.jsonl'),
+    provider: 'anthropic',
+    model: 'claude',
+    project: decodeClaudeProject(proj),
+    messages,
+  };
+});

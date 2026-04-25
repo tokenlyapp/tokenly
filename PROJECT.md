@@ -8,7 +8,7 @@ This document is the complete build record. Read it before making architectural 
 
 ## 0. Current state (session handoff)
 
-**Current shipped version:** `1.11.0` — on GitHub Releases + Netlify Blobs. Auto-update pipeline live.
+**Current shipped version:** `2.0.0` — on GitHub Releases + Netlify Blobs. Auto-update pipeline live.
 
 **What's working in production:**
 - Six providers tracked (3 local-file, 3 admin-API)
@@ -25,6 +25,79 @@ This document is the complete build record. Read it before making architectural 
 - Menu-bar live token display with per-provider source selector + period toggle
 - Analytics view with KPIs, stacked-area / stacked-bar / projection charts, and per-chart PDF + PNG export
 - CSV / JSON export of the current window — daily trend, provider totals, or per-model breakdown
+
+---
+
+## 0a. Shipped in 2.0.0 — Max + AI tier launch
+
+A new paid tier and a substantial AI surface. Major version bump from 1.11.x to 2.0.0 reflects the size of the change — chat, voice, web search, dictation, conversation memory, the new tier, the new `/max-ai` page on the marketing site.
+
+**Pricing model:**
+- Max + AI is a separate one-time tier at **$8.99 lifetime** (no subscription). Existing $5.99 Max stays as-is.
+- License-verify edge function branches on Stripe price ID rather than `mode` — both products are now `mode: 'payment'`. New env vars required on Netlify: `STRIPE_PRICE_ID_MAX`, `STRIPE_PRICE_ID_MAX_AI`.
+- The legacy $4.49/mo subscription path is preserved in verify so any pre-launch subscribers still authenticate; the subscription product is archived in Stripe to prevent new sign-ups.
+- Live Payment Link: `https://buy.stripe.com/4gMeVcfn15cx5nY4Ej0sU0c`.
+
+**Tier model + gating:**
+- Three tiers: `free`, `max`, `max-ai`. `loadLicense()` accepts both paid tiers via `VALID_TIERS` set. `isPro = tier in (max, max-ai)`; `isAi = tier === 'max-ai'`.
+- Chat + voice IPCs (`chat:stream`, `chat:transcribe`, `chat:tts`) gate server-side via `requireMaxAi()` so even a UI bypass can't reach them.
+- Header badge shows "Max + AI" for `tier === 'max-ai'`, falls back to "Max" otherwise.
+
+**Tokenly Chat (`app/components/ChatSheet.jsx`):**
+- Direct chat with OpenAI / Anthropic / Google using **regular** API keys (separate from the admin keys used for usage tracking). Inline keys editor in the chat sheet header.
+- Streaming via SSE — all three providers handled in a shared `sseEvents` parser in main.js. OpenAI uses Chat Completions by default, switches to Responses API when web search is on.
+- Web search per provider: OpenAI `tools: [{type: 'web_search_preview'}]` via Responses API; Anthropic `tools: [{type: 'web_search_20250305'}]`; Gemini `tools: [{google_search: {}}]`. Citations rendered as clickable source chips under the assistant message. Toggle defaults ON, persisted via localStorage.
+- Live dictation: click mic in composer (or ⌘⇧Space anywhere) → continuous MediaRecorder with `start(2000)` timeslices → every dataavailable triggers a Whisper pass on the accumulated audio → composer text replaces in place. Click mic again or hit Enter to send.
+- Conversation persistence: each chat saved as JSON under `~/Library/Application Support/Tokenly/conversations/`, listed in a left rail in chat order, auto-titled from first user message.
+- Markdown rendering with code fences (extends ChangelogSheet's renderer), per-block copy buttons, syntax-highlighted via mono font (no library).
+- Favorites: `chatPrefs.favoriteModels = { openai: [...], anthropic: [...], google: [...] }`. Star icon on every model row in both pickers (chat sheet + voice mate). Favorites pin to the top with a divider; first favorite becomes the default model when chat or voice opens.
+
+**VoiceMate (`app/components/VoiceMate.jsx`, opens via ⌘⇧V):**
+- Standalone frameless `BrowserWindow` (360×460, transparent, alwaysOnTop), separate from the popover. Loads `index.html` with `hash: 'voicemate'`; the renderer mode-switches in `index.html`'s root render based on `window.api.mode()`.
+- Continuous VAD listening (Web Audio AnalyserNode, RMS threshold 0.018, ≥300ms speech, 2.6s trailing silence ends a turn, 60s hard cap). Pulsing orb visualizes phase: greeting → listening → thinking → speaking.
+- Greeting on mount: TTS-spoken "Hi, I'm Tokenly. How can I help you?" Then mic re-arms.
+- Pipeline per turn: Whisper STT → LLM (streaming, with web search if toggled) → strip-markdown for TTS → OpenAI tts-1 playback → re-arm mic.
+- **Conversation memory**: on mount, builds a compact digest of the last ~30 saved conversations (date · title · final-assistant snippet, capped 6KB). Injected into the system prompt under a `PAST CONVERSATIONS` block.
+- **Usage awareness**: a new `chat:usage-snapshot` IPC returns a compact JSON snapshot of all current Tokenly numbers (per-provider tokens, costs, today's burn, top 5 models, quota %). Refetched at the start of every voice turn. Injected into the system prompt under `LIVE TOKENLY USAGE DATA` with explicit instructions to cite real numbers and to verbalize dollar amounts in plain English (since the response is spoken).
+- **Live cost meter** in the footer: tracks STT (`audio_seconds × $0.006/min`), LLM (from stream `done` event), TTS (`chars × $0.015/1K`). Hover for breakdown. Persisted into the saved conversation's `totals.voiceCostBreakdown`. All three bill directly to the user's API account; no proxy.
+- Model picker popover with the same favorites pattern as ChatSheet.
+- End-of-conversation: cleanup audio resources, save conversation, close window.
+
+**Hamburger menu (`MainMenuSheet` in `App.jsx`):**
+- Replaces the previously crowded header. Header now shows just Refresh, Voice AI shortcut, hamburger, and detach.
+- Slide-up sheet with 10 rows: Chat / Voice AI / Chat history / Analytics / API keys / Budget alerts / Export data / View current pricing / What's new / Settings / Manage license. Each row has tier badge ("Max" or "Max + AI") on the right of the label as a permanent classification.
+- Per-row routing: free-tier-clicked Max-only rows route to the License sheet upsell.
+- Back-arrow navigation pattern: every sheet opened from menu has `onBack` that returns to menu. Nested sheets (API Keys / Budgets / Export / Pricing / Changelog) keep their existing back-to-Settings chain. Only the menu sheet itself has `SheetMinimize` (chevron-down); all others show a back arrow.
+
+**HistorySheet (`app/components/HistorySheet.jsx`):**
+- Tabs: All / Tokenly chats / Claude Code. Reads `~/.claude/projects/*.jsonl` headers for Claude Code session metadata.
+- Claude Code transcripts are filtered to readable user→final-response exchanges only — main.js `chat:load-claude-session` strips `tool_use`, `tool_result`, `thinking` blocks; filters `isSidechain` and `isMeta` entries; strips `<system-reminder>`, `<command-name>`, `<command-message>`, `<command-args>`, `<command-stdout>`, `<local-command-stdout>`, `<bash-input>`, etc. tags; collapses consecutive same-role runs to keep only the last (the closing reply, not the running narration).
+
+**Tray quota display:**
+- Two new prefs: `trayContent` (`tokens` / `quota` / `both` / off) and `trayQuota` (provider:window key like `claude-code:5h`).
+- `computeTrayTitle` rewritten as a composable two-segment renderer. Output looks like `Claude 5h 73% · 14h` (used % + reset countdown) or `Today 1.2K · CC 5h 73% · 14h` for both modes.
+- Settings → Menu bar tokens has new "Show" segmented control + "Quota" dropdown that lists only currently-loaded windows.
+
+**Quota fetcher resilience:**
+- New `oauthQuotaCache` map (5min fresh / 2h stale / 24h max-age) wraps Claude / Codex / Gemini OAuth quota fetchers. On any transient failure (network, 429, 5xx) the wrapper returns the last-known-good value with `_stale: true` + `_ageMs`. Renderer shows a soft amber "12m old" pill in the quota header.
+- On hard failure with no cache, returns `{ _unavailable: true, _reason }` with reasons like `auth_expired` / `scopes_insufficient` / `network` / `empty_response`. ProviderCard renders a tasteful dashed-border notice block instead of disappearing.
+- Fixes the original "Claude quotas flicker" complaint — root cause was that any failure mode returned `null` and the renderer treated null as "no subscription" and unmounted the entire block.
+
+**Marketing site (`~/Documents/tokenly-netlify/`):**
+- New dedicated page at `/max-ai` (`max-ai.html` + `components/MaxAiPage.jsx`) with hero, eight feature cards, four-step "How it works", FAQ, final CTA. Mirrors `/max` structure.
+- Nav: "Max + AI" added between Max and Changelog.
+- Footer: Max + AI link points to `/max-ai` (was `/pricing#max-ai`), badge reads "$8.99".
+- `/features` gets a new `MaxAiFeatureBlock` component (six tiles: Chat / Voice / Web Search / Live Dictation / Memory / Personal) inserted between the shared Features section and the bottom CTA.
+- `/pricing` page hero, FAQ, and trust pills rewritten for "all tiers are lifetime, no subscription, user pays own API costs" framing.
+- Homepage `Pricing` section has a 3-column grid (Free / Max / Max + AI) with a "RECOMMENDED" pill on the Max + AI card.
+- Edge functions (`license-verify.mjs`, `send-activation-email.mjs`, `stripe-webhook.mjs`) all branch on price ID for one-time products and preserve the legacy subscription path.
+- `netlify.toml` has a new redirect: `/max-ai` → `/max-ai.html`.
+
+**Window sizing:**
+- Popover and desktop window default width bumped from 460px to 690px (~50% wider). Heights unchanged.
+
+**Disclaimers:**
+- Chat keys editor, License sheet, marketing pricing page, homepage Pricing block, and Max + AI page all carry the line "Chat & voice API usage is billed directly to your own provider account. Tokenly never proxies your requests." The earlier subscription-cost-coverage rationale ("subscription covers per-user voice / TTS API costs") has been removed everywhere.
 
 **Infrastructure addresses:**
 - GitHub: `tokenlyapp/tokenly` (public)
@@ -446,15 +519,25 @@ netlify deploy --prod
 
 ### The complete Stripe → live setup (one-time)
 
-1. Stripe Dashboard → Products → Add product → **Tokenly Max** $5.99 one-time
-2. Create Payment Link. After-payment settings: *Don't show confirmation page → Redirect to URL*. URL: `https://trytokenly.app/thank-you.html?session_id={CHECKOUT_SESSION_ID}`. Enable "Collect customer email."
-3. Copy the `https://buy.stripe.com/...` URL
-4. Open `components/App.jsx` and set `const STRIPE_CHECKOUT_URL = 'https://buy.stripe.com/...'`. The value is also referenced from `components/Nav.jsx` and `components/MaxPage.jsx` — update all three locations.
-5. `netlify env:set STRIPE_SECRET_KEY "sk_live_..."`
-6. Add a webhook in Stripe Dashboard → Developers → Webhooks pointing at `https://trytokenly.app/api/stripe-webhook`, subscribed to `checkout.session.completed`. Copy the signing secret and `netlify env:set STRIPE_WEBHOOK_SECRET "whsec_..."`
+Two products live now: **Tokenly Max** ($5.99 one-time) and **Tokenly Max + AI** ($8.99 one-time). Both are `mode: 'payment'` Stripe sessions; the verify edge function distinguishes them by Stripe **price ID**, not by mode.
+
+1. Stripe Dashboard → Products → Add product → **Tokenly Max** $5.99 one-time. Repeat for **Tokenly Max + AI** $8.99 one-time. Note the price ID (`price_…`) for each.
+2. Create a Payment Link for each. After-payment settings: *Don't show confirmation page → Redirect to URL*. URL: `https://trytokenly.app/thank-you.html?session_id={CHECKOUT_SESSION_ID}`. Enable "Collect customer email."
+3. Copy each `https://buy.stripe.com/...` URL.
+4. Update the three URL locations:
+   - `components/App.jsx`: `STRIPE_CHECKOUT_URL` (Max) + `STRIPE_CHECKOUT_URL_MAX_AI` (Max + AI)
+   - `components/MaxPage.jsx`: `MAX_BUY_URL` + `MAX_AI_BUY_URL`
+   - In the desktop app repo: `app/components/LicenseSheet.jsx`: `BUY_MAX_URL` + `BUY_MAX_AI_URL`
+5. Set Netlify env vars:
+   - `netlify env:set STRIPE_SECRET_KEY "sk_live_..."`
+   - `netlify env:set STRIPE_PRICE_ID_MAX "price_…"` ← the $5.99 price ID
+   - `netlify env:set STRIPE_PRICE_ID_MAX_AI "price_…"` ← the $8.99 price ID
+6. Add a webhook in Stripe Dashboard → Developers → Webhooks pointing at `https://trytokenly.app/api/stripe-webhook`, subscribed to `checkout.session.completed` (and optionally `customer.subscription.deleted` / `customer.subscription.paused` / `invoice.payment_failed` for legacy subscription state changes). Copy the signing secret and `netlify env:set STRIPE_WEBHOOK_SECRET "whsec_..."`
 7. `netlify env:set RESEND_API_KEY "re_..."` (activation emails)
 8. `netlify deploy --prod`
-9. Test one purchase end-to-end with a real card (refund immediately from Stripe Dashboard). Verify the activation email arrives and the license-verify endpoint returns `active: true` for the returned code.
+9. Test one purchase end-to-end on each tier with a real card (refund immediately from Stripe Dashboard). Verify the activation email arrives with the correct subject ("Your Tokenly Max activation code" vs "Your Tokenly Max + AI activation code") and the license-verify endpoint returns the right `tier` for each code.
+
+**Note on legacy subscribers:** an earlier $4.49/mo subscription product existed. It's been archived in Stripe. Verify still honors active subscriptions (mode=subscription, status=active|trialing → tier='max-ai') so any pre-migration subscribers keep working until they cancel.
 
 ---
 

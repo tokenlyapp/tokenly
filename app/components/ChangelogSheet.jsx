@@ -133,7 +133,7 @@ function renderMarkdown(md, t, openExternal) {
   return blocks;
 }
 
-function ChangelogSheet({ open, onClose, currentVersion, onMarkSeen }) {
+function ChangelogSheet({ open, onClose, onBack, currentVersion, onMarkSeen }) {
   const t = TOKENS.color;
   const [releases, setReleases] = React.useState(null); // null = loading
   const [err, setErr] = React.useState(null);
@@ -181,16 +181,21 @@ function ChangelogSheet({ open, onClose, currentVersion, onMarkSeen }) {
         zIndex: 80,
         maxHeight: '95%', overflowY: 'auto',
       }}>
-        <SheetMinimize onClick={onClose} />
+        {!onBack && <SheetMinimize onClick={onClose} />}
 
         <div style={{
-          display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
-          marginBottom: 10,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          marginBottom: 10, gap: 8,
         }}>
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.01em' }}>What's new</div>
-            <div style={{ fontSize: 10.5, color: t.textMute, marginTop: 2 }}>
-              Release notes pulled live from GitHub.
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+            {onBack && (
+              <IconBtn onClick={onBack} title="Back">{Icons.arrowLeft}</IconBtn>
+            )}
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.01em' }}>What's new</div>
+              <div style={{ fontSize: 10.5, color: t.textMute, marginTop: 2 }}>
+                Release notes pulled live from GitHub.
+              </div>
             </div>
           </div>
           {currentVersion && (

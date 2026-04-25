@@ -333,8 +333,52 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
           </div>
         )}
 
+        {/* Quota unavailable notice — shown when fresh fetch failed AND no
+            cached data is available to fall back to. Tasteful: explains why
+            so the user knows whether to take action (re-auth) or wait. */}
+        {data.quota && data.quota._unavailable && (() => {
+          const reason = data.quota._reason;
+          const map = {
+            auth_expired: {
+              title: 'Quota check needs a re-login',
+              body: 'Run the CLI once (or sign in via your provider) to refresh OAuth tokens. We don\'t store the password — your local CLI does.',
+            },
+            scopes_insufficient: {
+              title: 'OAuth scopes don\'t cover quota reads',
+              body: 'Your local credentials are valid for inference but don\'t include the user:profile scope needed to fetch subscription quotas. This is normal for some CLI auth flows.',
+            },
+            network: {
+              title: 'Quotas are temporarily unavailable',
+              body: 'We couldn\'t reach the provider\'s quota endpoint. We\'ll retry on the next refresh — local token tracking is unaffected.',
+            },
+            empty_response: {
+              title: 'Provider returned no quota data',
+              body: 'The endpoint responded but didn\'t include any usage windows. This usually clears up on the next refresh.',
+            },
+          };
+          const m = map[reason] || map.network;
+          return (
+            <div style={{
+              background: 'rgba(255,255,255,0.02)',
+              border: `1px dashed ${t.cardBorder}`,
+              borderRadius: 10, padding: '10px 12px',
+              marginBottom: 10, display: 'flex', gap: 10, alignItems: 'flex-start',
+            }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={t.textMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}>
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 8v4"/>
+                <path d="M12 16h.01"/>
+              </svg>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 11, color: t.textDim, fontWeight: 600, lineHeight: 1.4 }}>{m.title}</div>
+                <div style={{ fontSize: 10.5, color: t.textMute, marginTop: 3, lineHeight: 1.5 }}>{m.body}</div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Claude OAuth quota — session/weekly windows + overage cap. */}
-        {data.quota && (() => {
+        {data.quota && !data.quota._unavailable && (() => {
           const q = data.quota;
           // Use the provider's brand gradient as the default fill — Claude reads
           // warm-coral, OpenRouter would read violet, etc. Only escalate to amber
@@ -434,6 +478,26 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
                     boxShadow: `0 0 4px ${brandDark}88`,
                   }} />
                   <span>{headerLabel}</span>
+                  {q._stale && (() => {
+                    // Stale = serving last-known-good while a fresh fetch
+                    // failed. Show a small dim "updated Xm ago" pill so the
+                    // user knows the bars aren't real-time but isn't alarmed.
+                    const ageMs = q._ageMs || 0;
+                    const ageMin = Math.floor(ageMs / 60000);
+                    const label = ageMin < 1 ? '<1m old' : ageMin < 60 ? `${ageMin}m old` : `${Math.floor(ageMin / 60)}h old`;
+                    return (
+                      <span title="Provider quota endpoint didn't respond on the last refresh — showing the last known values."
+                        style={{
+                          fontSize: 8.5, fontWeight: 600, letterSpacing: '0.04em',
+                          padding: '1px 6px', borderRadius: 999,
+                          background: 'rgba(251,191,36,0.10)',
+                          color: t.amber,
+                          border: '1px solid rgba(251,191,36,0.25)',
+                          textTransform: 'none',
+                          fontVariantNumeric: 'tabular-nums',
+                        }}>{label}</span>
+                    );
+                  })()}
                 </span>
                 {q.credits && (q.credits.unlimited || (q.credits.balance != null && q.credits.balance > 0)) && (
                   <span style={{

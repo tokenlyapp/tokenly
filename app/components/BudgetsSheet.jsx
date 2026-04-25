@@ -110,7 +110,7 @@ function BudgetsSheet({ open, onClose, onBack }) {
           overflowY: 'auto',
         }}
       >
-        <SheetMinimize onClick={onClose} />
+        {!onBack && <SheetMinimize onClick={onClose} />}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {onBack && (
