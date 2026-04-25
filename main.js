@@ -389,8 +389,13 @@ ipcMain.handle('usage:fetch', async (_e, provider, rangeDays) => {
 
   const promise = (async () => {
     try {
-      const data = await fetchUsage(provider, key, days);
-      const value = { ok: true, data };
+      // Run usage + status in parallel. Status is strictly additive — the
+      // call has its own 4s timeout + 5min cache and never throws.
+      const [data, status] = await Promise.all([
+        fetchUsage(provider, key, days),
+        fetchProviderStatus(provider).catch(() => null),
+      ]);
+      const value = { ok: true, data: status ? { ...data, status } : data };
       fetchCache.set(cacheKey, { ts: Date.now(), value });
       return value;
     } catch (err) {
@@ -916,12 +921,93 @@ function setupLicenseReverify() {
   setInterval(() => backgroundVerifyLicense().catch(() => {}), 24 * 60 * 60 * 1000);
 }
 
+// ---------------------------------------------------------------------------
+// Provider status — Statuspage.io feed for OpenAI / Anthropic / OpenRouter.
+// Cached 5min in memory. Returned as `status` on every usage payload so the
+// renderer can show an incident pill on affected cards.
+// Gemini uses Google Workspace's incidents.json which has a different shape;
+// deferred until the Gemini OAuth pass.
+// ---------------------------------------------------------------------------
+
+const STATUS_ENDPOINTS = {
+  'claude-code': 'https://status.anthropic.com/api/v2/status.json',
+  'codex':       'https://status.openai.com/api/v2/status.json',
+  'openai':      'https://status.openai.com/api/v2/status.json',
+  'anthropic':   'https://status.anthropic.com/api/v2/status.json',
+  // 'openrouter' uses a hand-rolled status page (not Statuspage.io) and has
+  // no JSON feed — link-only, same as CodexBar.
+  // 'gemini-cli' uses Google Workspace's incidents.json with a different
+  // shape — deferred until Phase 2.
+};
+
+const STATUS_TTL_MS = 5 * 60 * 1000;
+const statusCache = new Map(); // url -> { ts, data }
+
+async function fetchProviderStatus(provider) {
+  const url = STATUS_ENDPOINTS[provider];
+  if (!url) return null;
+
+  const cached = statusCache.get(url);
+  if (cached && Date.now() - cached.ts < STATUS_TTL_MS) return cached.data;
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 4000);
+  let res;
+  try {
+    res = await fetch(url, { headers: { 'Accept': 'application/json' }, signal: ctrl.signal });
+  } catch { clearTimeout(timeout); return cached ? cached.data : null; }
+  clearTimeout(timeout);
+  if (!res || !res.ok) return cached ? cached.data : null;
+
+  let body;
+  try { body = await res.json(); } catch { return cached ? cached.data : null; }
+
+  // Statuspage.io shape: { page: {...}, status: { indicator, description } }
+  // indicator ∈ "none" | "minor" | "major" | "critical" | "maintenance"
+  const s = body && body.status;
+  if (!s || typeof s !== 'object') return cached ? cached.data : null;
+
+  const data = {
+    indicator: String(s.indicator || 'none'),
+    description: String(s.description || ''),
+    pageUrl: (body.page && body.page.url) || null,
+    fetchedAt: Date.now(),
+  };
+  statusCache.set(url, { ts: Date.now(), data });
+  return data;
+}
+
 async function fetchUsage(provider, key, days) {
   const now = Math.floor(Date.now() / 1000);
   const start = now - days * 86400;
-  if (provider === 'claude-code') return fetchClaudeCodeLocal(days);
-  if (provider === 'codex') return fetchCodexLocal(days);
-  if (provider === 'gemini-cli') return fetchGeminiCLILocal(days);
+  if (provider === 'claude-code') {
+    // Run local JSONL scan + Claude Pro/Max OAuth quota in parallel. OAuth is
+    // strictly additive — null on any failure (no creds, expired, network).
+    const [local, quota] = await Promise.all([
+      fetchClaudeCodeLocal(days),
+      fetchClaudeOAuthQuota().catch(() => null),
+    ]);
+    return quota ? { ...local, quota } : local;
+  }
+  if (provider === 'codex') {
+    // Same pattern as claude-code — local rollout scan + ChatGPT/Codex OAuth
+    // window + credits via the private /backend-api/wham/usage endpoint.
+    // OAuth response replaces the rollout-derived rateLimits when present
+    // (it's authoritative and has the credits balance + plan name).
+    const [local, quota] = await Promise.all([
+      fetchCodexLocal(days),
+      fetchCodexOAuthQuota().catch(() => null),
+    ]);
+    return quota ? { ...local, quota } : local;
+  }
+  if (provider === 'gemini-cli') {
+    // Local CLI rollout + Gemini Code Assist OAuth quota.
+    const [local, quota] = await Promise.all([
+      fetchGeminiCLILocal(days),
+      fetchGeminiOAuthQuota().catch(() => null),
+    ]);
+    return quota ? { ...local, quota } : local;
+  }
   if (provider === 'openai') return fetchOpenAI(key, start, now, days);
   if (provider === 'anthropic') return fetchAnthropic(key, start, now, days);
   if (provider === 'openrouter') return fetchOpenRouter(key, days);
@@ -1179,15 +1265,24 @@ async function fetchAnthropic(key, start, end, days) {
 }
 
 async function fetchOpenRouter(key, days) {
-  // Fetch activity + credits balance in parallel.
-  const [res, credRes] = await Promise.all([
+  // /key enrichment must not block credits/activity if OpenRouter is slow.
+  const keyAbort = new AbortController();
+  const keyTimeout = setTimeout(() => keyAbort.abort(), 1000);
+
+  // Fetch activity + credits balance + key info in parallel.
+  const [res, credRes, keyRes] = await Promise.all([
     fetch('https://openrouter.ai/api/v1/activity', {
       headers: { Authorization: `Bearer ${key}` },
     }),
     fetch('https://openrouter.ai/api/v1/credits', {
       headers: { Authorization: `Bearer ${key}` },
     }).catch(() => null),
+    fetch('https://openrouter.ai/api/v1/key', {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: keyAbort.signal,
+    }).catch(() => null),
   ]);
+  clearTimeout(keyTimeout);
 
   // Credits are non-fatal — if this fails we still return activity data.
   let balance = null;
@@ -1198,6 +1293,37 @@ async function fetchOpenRouter(key, days) {
       const total = Number(d.total_credits) || 0;
       const used = Number(d.total_usage) || 0;
       balance = { total, used, remaining: Math.max(0, total - used), currency: 'USD' };
+    } catch { /* non-fatal */ }
+  }
+
+  // /key returns per-API-key spend cap + rate-limit info. All non-fatal.
+  // Shape: { data: { limit: number|null, usage: number, rate_limit: { requests, interval } } }
+  let keyQuota = null;
+  let rateLimit = null;
+  if (keyRes && keyRes.ok) {
+    try {
+      const kb = await keyRes.json();
+      const d = kb.data || kb;
+      if (d && typeof d === 'object') {
+        const limit = Number(d.limit);
+        const usage = Number(d.usage);
+        if (Number.isFinite(limit) && limit > 0 && Number.isFinite(usage) && usage >= 0) {
+          keyQuota = {
+            limit,
+            usage,
+            remaining: Math.max(0, limit - usage),
+            usedPercent: Math.min(100, (usage / limit) * 100),
+            currency: 'USD',
+          };
+        }
+        if (d.rate_limit && typeof d.rate_limit === 'object') {
+          const reqs = Number(d.rate_limit.requests);
+          const interval = String(d.rate_limit.interval || '');
+          if (Number.isFinite(reqs) && reqs > 0 && interval) {
+            rateLimit = { requests: reqs, interval };
+          }
+        }
+      }
     } catch { /* non-fatal */ }
   }
   if (res.status === 401 || res.status === 403) throw new Error('Invalid key. OpenRouter requires a Management key (not a regular API key).');
@@ -1263,6 +1389,8 @@ async function fetchOpenRouter(key, days) {
     dailyBreakdown,
     windowDays: effectiveDays,
     balance,
+    keyQuota,
+    rateLimit,
     note: days > 30 ? 'OpenRouter only exposes the last 30 completed UTC days.' : null,
   };
 }
@@ -1446,6 +1574,288 @@ function* walkJsonlFiles(dir) {
     if (e.isDirectory()) { yield* walkJsonlFiles(full); }
     else if (e.isFile() && e.name.endsWith('.jsonl')) { yield full; }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Claude OAuth quota — for Claude Pro/Max subscribers without an admin key.
+// Reads OAuth credentials written by the Claude CLI (file or macOS Keychain
+// item "Claude Code-credentials") and calls the same /api/oauth/usage
+// endpoint the CLI uses to render `/usage`. Returns session (5h), weekly,
+// model-specific quotas + plan tier. Strictly additive: any failure returns
+// null and the local card data is shown unchanged.
+// ---------------------------------------------------------------------------
+
+const CLAUDE_CREDENTIALS_FILE = path.join(os.homedir(), '.claude', '.credentials.json');
+const CLAUDE_KEYCHAIN_SERVICE = 'Claude Code-credentials';
+
+function parseClaudeCredentials(raw) {
+  if (!raw) return null;
+  let obj;
+  try { obj = JSON.parse(raw); } catch { return null; }
+  const oa = obj && obj.claudeAiOauth;
+  if (!oa || typeof oa !== 'object') return null;
+  const accessToken = String(oa.accessToken || '').trim();
+  if (!accessToken) return null;
+  const expiresAtMs = Number(oa.expiresAt) || null;
+  return {
+    accessToken,
+    refreshToken: oa.refreshToken || null,
+    expiresAtMs,
+    scopes: Array.isArray(oa.scopes) ? oa.scopes : [],
+    rateLimitTier: oa.rateLimitTier || null,
+  };
+}
+
+function readClaudeCredentialsFromFile() {
+  try {
+    if (!fs.existsSync(CLAUDE_CREDENTIALS_FILE)) return null;
+    return parseClaudeCredentials(fs.readFileSync(CLAUDE_CREDENTIALS_FILE, 'utf8'));
+  } catch { return null; }
+}
+
+function readClaudeCredentialsFromKeychain() {
+  if (process.platform !== 'darwin') return null;
+  // Shell out to /usr/bin/security so we don't need a native keytar dep.
+  // The first call may trigger a macOS Keychain ACL prompt; user can grant
+  // "Always Allow" to suppress on subsequent runs.
+  const { execFileSync } = require('child_process');
+  try {
+    const out = execFileSync(
+      '/usr/bin/security',
+      ['find-generic-password', '-s', CLAUDE_KEYCHAIN_SERVICE, '-w'],
+      { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    return parseClaudeCredentials(out);
+  } catch { return null; }
+}
+
+function loadClaudeOAuthCredentials() {
+  return readClaudeCredentialsFromFile() || readClaudeCredentialsFromKeychain();
+}
+
+function planLabelFromTier(tier) {
+  if (!tier) return null;
+  const t = String(tier).toLowerCase();
+  if (t.includes('max20'))      return 'Max 20x';
+  if (t.includes('max5'))       return 'Max 5x';
+  if (t.includes('max'))        return 'Max';
+  if (t.includes('team'))       return 'Team';
+  if (t.includes('enterprise')) return 'Enterprise';
+  if (t.includes('pro'))        return 'Pro';
+  return tier;
+}
+
+function mapOAuthWindow(win) {
+  if (!win || typeof win !== 'object') return null;
+  const u = Number(win.utilization);
+  if (!Number.isFinite(u)) return null;
+  // Anthropic's /api/oauth/usage returns `utilization` as a percentage (0-100),
+  // not a fraction (0-1). Some endpoints in the wild use the fraction form, so
+  // auto-detect: values <= 1 are treated as fractions and scaled by 100.
+  // (Don't clamp to 100 here — overage usage can exceed 100% and we want the
+  // raw value preserved for display.)
+  const usedPercent = u > 1 ? u : u * 100;
+  return {
+    usedPercent: Math.max(0, usedPercent),
+    resetsAt: win.resets_at || null,
+  };
+}
+
+async function fetchClaudeOAuthQuota() {
+  const creds = loadClaudeOAuthCredentials();
+  if (!creds) return null;
+  if (creds.expiresAtMs && Date.now() >= creds.expiresAtMs) return null;
+  // The /api/oauth/usage endpoint requires user:profile scope (CLI tokens
+  // with only user:inference cannot call it).
+  if (creds.scopes.length && !creds.scopes.includes('user:profile')) return null;
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 5000);
+  let res;
+  try {
+    res = await fetch('https://api.anthropic.com/api/oauth/usage', {
+      headers: {
+        'Authorization': `Bearer ${creds.accessToken}`,
+        'Accept': 'application/json',
+        'anthropic-beta': 'oauth-2025-04-20',
+        'User-Agent': 'tokenly/' + (app.getVersion ? app.getVersion() : 'dev'),
+      },
+      signal: ctrl.signal,
+    });
+  } catch { clearTimeout(timeout); return null; }
+  clearTimeout(timeout);
+  if (!res || !res.ok) return null;
+
+  let body;
+  try { body = await res.json(); } catch { return null; }
+
+  const fiveHour       = mapOAuthWindow(body.five_hour);
+  const sevenDay       = mapOAuthWindow(body.seven_day);
+  const sevenDaySonnet = mapOAuthWindow(body.seven_day_sonnet);
+  const sevenDayOpus   = mapOAuthWindow(body.seven_day_opus);
+
+  let extraUsage = null;
+  if (body.extra_usage && typeof body.extra_usage === 'object') {
+    const e = body.extra_usage;
+    // Anthropic returns monthly_limit and used_credits in CENTS (paired with
+    // currency: "USD"). Same gotcha as the admin Cost Report — see the
+    // §8 bug table in PROJECT.md. Divide by 100 to get dollars.
+    const limit = (Number(e.monthly_limit) || 0) / 100;
+    const used  = (Number(e.used_credits)  || 0) / 100;
+    extraUsage = {
+      enabled: Boolean(e.is_enabled),
+      used,
+      limit,
+      currency: e.currency || 'USD',
+    };
+  }
+
+  if (!fiveHour && !sevenDay && !sevenDaySonnet && !sevenDayOpus && !extraUsage) return null;
+
+  return {
+    fiveHour,
+    sevenDay,
+    sevenDaySonnet,
+    sevenDayOpus,
+    extraUsage,
+    planTier: planLabelFromTier(creds.rateLimitTier),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Codex OAuth quota — for ChatGPT Pro/Plus/Team/Business users without an
+// OpenAI Admin API key. Reads OAuth tokens written by the Codex CLI to
+// ~/.codex/auth.json and calls the same private /backend-api/wham/usage
+// endpoint the CLI uses internally. Returns 5h/weekly windows, credits
+// balance, and plan tier. Strictly additive: any failure returns null.
+//
+// Note on token refresh: this minimal v1 only reads the existing access_token.
+// The Codex CLI refreshes its own tokens proactively every 8 days, so for
+// users actively running `codex` the token is fresh. If the access_token has
+// expired we silently return null; the next `codex` invocation will refresh
+// it and OAuth data reappears on the next Tokenly poll.
+// ---------------------------------------------------------------------------
+
+const CODEX_AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json');
+const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
+
+function readCodexAuth() {
+  try {
+    if (!fs.existsSync(CODEX_AUTH_FILE)) return null;
+    const raw = fs.readFileSync(CODEX_AUTH_FILE, 'utf8');
+    const json = JSON.parse(raw);
+    const tokens = json && json.tokens;
+    if (!tokens || typeof tokens !== 'object') return null;
+    const accessToken = String(tokens.access_token || '').trim();
+    if (!accessToken) return null;
+    return {
+      accessToken,
+      accountId: tokens.account_id || null,
+      idToken: tokens.id_token || null,
+      lastRefresh: json.last_refresh || null,
+    };
+  } catch { return null; }
+}
+
+// JWT exp claim is in seconds since epoch. Returns true if the token is
+// already expired (so we can short-circuit the network call).
+function isJwtExpired(jwt) {
+  try {
+    const parts = String(jwt).split('.');
+    if (parts.length < 2) return false;
+    // base64url → base64
+    const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = Buffer.from(payload, 'base64').toString('utf8');
+    const obj = JSON.parse(decoded);
+    if (!obj || typeof obj.exp !== 'number') return false;
+    return obj.exp * 1000 <= Date.now();
+  } catch { return false; } // unparseable — let the server decide
+}
+
+function planLabelFromCodexTier(planType) {
+  if (!planType) return null;
+  const p = String(planType).toLowerCase();
+  // Codex returns lowercase enum values; map to the casing the user sees in
+  // their ChatGPT account ("ChatGPT Pro", "ChatGPT Plus", etc).
+  const map = {
+    pro: 'Pro',
+    plus: 'Plus',
+    free: 'Free',
+    go: 'Go',
+    team: 'Team',
+    business: 'Business',
+    enterprise: 'Enterprise',
+    edu: 'Edu',
+    education: 'Education',
+    free_workspace: 'Free Workspace',
+    guest: 'Guest',
+  };
+  return map[p] || planType;
+}
+
+function mapCodexWindow(win) {
+  if (!win || typeof win !== 'object') return null;
+  const u = Number(win.used_percent);
+  if (!Number.isFinite(u)) return null;
+  // Codex returns used_percent as 0–100 (matches the CLI's /status display).
+  // Same auto-detect guard as the Claude fetcher in case the shape changes.
+  const usedPercent = u > 1 ? u : u * 100;
+  const resetAt = Number(win.reset_at);
+  return {
+    usedPercent: Math.max(0, usedPercent),
+    resetsAt: Number.isFinite(resetAt) ? new Date(resetAt * 1000).toISOString() : null,
+  };
+}
+
+async function fetchCodexOAuthQuota() {
+  const creds = readCodexAuth();
+  if (!creds) return null;
+  if (isJwtExpired(creds.accessToken)) return null;
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 5000);
+  let res;
+  try {
+    const headers = {
+      'Authorization': `Bearer ${creds.accessToken}`,
+      'Accept': 'application/json',
+      // Match the Codex CLI's user-agent so the endpoint accepts us; some
+      // backends gate on UA. We pretend to be `codex-cli` rather than tokenly
+      // because that's what the endpoint expects.
+      'User-Agent': 'codex-cli',
+    };
+    if (creds.accountId) headers['ChatGPT-Account-Id'] = creds.accountId;
+    res = await fetch(CODEX_USAGE_URL, { headers, signal: ctrl.signal });
+  } catch { clearTimeout(timeout); return null; }
+  clearTimeout(timeout);
+  if (!res || !res.ok) return null;
+
+  let body;
+  try { body = await res.json(); } catch { return null; }
+
+  const rl = body && body.rate_limit;
+  const fiveHour = rl ? mapCodexWindow(rl.primary_window)   : null;
+  const sevenDay = rl ? mapCodexWindow(rl.secondary_window) : null;
+
+  let credits = null;
+  if (body && body.credits && typeof body.credits === 'object') {
+    const c = body.credits;
+    credits = {
+      hasCredits: Boolean(c.has_credits),
+      unlimited:  Boolean(c.unlimited),
+      balance:    Number.isFinite(Number(c.balance)) ? Number(c.balance) : null,
+      currency:   c.currency || 'USD',
+    };
+  }
+
+  if (!fiveHour && !sevenDay && !credits) return null;
+
+  return {
+    fiveHour,
+    sevenDay,
+    credits,
+    planTier: planLabelFromCodexTier(body && body.plan_type),
+  };
 }
 
 async function fetchClaudeCodeLocal(days) {
@@ -1789,6 +2199,205 @@ function costFromGeminiTokens(model, t) {
   const thoughts = (t.thoughts || 0) * p.output / 1e6;          // reasoning priced as output
   const tool     = (t.tool     || 0) * p.input  / 1e6;          // tool context priced as input
   return input + output + cached + thoughts + tool;
+}
+
+// ---------------------------------------------------------------------------
+// Gemini OAuth quota — for Gemini CLI / Code Assist users without an API key.
+// Reads OAuth tokens from ~/.gemini/oauth_creds.json (written by `gemini`),
+// refreshes via Google's OAuth endpoint when expired (writes new tokens back
+// so the CLI keeps working), discovers the Code Assist project, then calls
+// the private `retrieveUserQuota` and `loadCodeAssist` endpoints to pull
+// per-model quotas + tier (Free / Paid / Workspace).
+//
+// OAuth client_id/secret are public "installed app" values shipped with the
+// open-source gemini-cli. Rather than embed them here, we extract them at
+// runtime from the user's installed gemini-cli bundle — this stays current
+// across CLI updates and avoids checking known-public OAuth constants into
+// the public Tokenly source. Refresh requires the CLI to be installed.
+// ---------------------------------------------------------------------------
+
+const GEMINI_CREDS_FILE = path.join(os.homedir(), '.gemini', 'oauth_creds.json');
+let geminiOAuthClientCache = null;
+
+function geminiOAuthClient() {
+  if (geminiOAuthClientCache) return geminiOAuthClientCache;
+  const candidates = [
+    '/opt/homebrew/lib/node_modules/@google/gemini-cli/bundle',
+    '/usr/local/lib/node_modules/@google/gemini-cli/bundle',
+    path.join(os.homedir(), '.bun/install/global/node_modules/@google/gemini-cli/bundle'),
+  ];
+  for (const dir of candidates) {
+    try {
+      if (!fs.existsSync(dir)) continue;
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith('.js')) continue;
+        const txt = fs.readFileSync(path.join(dir, f), 'utf8');
+        const idM  = txt.match(/OAUTH_CLIENT_ID\s*=\s*"([^"]+)"/);
+        const secM = txt.match(/OAUTH_CLIENT_SECRET\s*=\s*"([^"]+)"/);
+        if (idM && secM) {
+          geminiOAuthClientCache = { id: idM[1], secret: secM[1] };
+          return geminiOAuthClientCache;
+        }
+      }
+    } catch { /* try next */ }
+  }
+  return null;
+}
+
+function readGeminiCreds() {
+  try {
+    if (!fs.existsSync(GEMINI_CREDS_FILE)) return null;
+    const j = JSON.parse(fs.readFileSync(GEMINI_CREDS_FILE, 'utf8'));
+    if (!j.access_token && !j.refresh_token) return null;
+    return j;
+  } catch { return null; }
+}
+
+function writeGeminiCreds(creds) {
+  // Atomic write so we don't half-clobber the file mid-CLI launch.
+  try {
+    const tmp = GEMINI_CREDS_FILE + '.tokenly.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(creds, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, GEMINI_CREDS_FILE);
+  } catch { /* non-fatal — refresh still works in-memory */ }
+}
+
+async function refreshGeminiToken(creds) {
+  if (!creds || !creds.refresh_token) return null;
+  const client = geminiOAuthClient();
+  if (!client) return null; // gemini-cli not installed → can't refresh
+  const params = new URLSearchParams({
+    client_id: client.id,
+    client_secret: client.secret,
+    refresh_token: creds.refresh_token,
+    grant_type: 'refresh_token',
+  });
+  let res;
+  try {
+    res = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
+  } catch { return null; }
+  if (!res.ok) return null;
+  let body;
+  try { body = await res.json(); } catch { return null; }
+  if (!body.access_token) return null;
+  const next = {
+    ...creds,
+    access_token: body.access_token,
+    expiry_date: Date.now() + (Number(body.expires_in) || 3600) * 1000,
+    scope: body.scope || creds.scope,
+    token_type: body.token_type || creds.token_type,
+    id_token: body.id_token || creds.id_token,
+    // refresh_token is reused across refreshes by Google for installed apps.
+  };
+  writeGeminiCreds(next);
+  return next;
+}
+
+async function ensureGeminiAccessToken() {
+  let creds = readGeminiCreds();
+  if (!creds) return null;
+  // Refresh if expiring within 60s (avoids races with in-flight calls).
+  const stale = !creds.access_token || !creds.expiry_date || creds.expiry_date - Date.now() < 60_000;
+  if (stale) {
+    const refreshed = await refreshGeminiToken(creds);
+    if (refreshed) creds = refreshed;
+    else if (!creds.access_token) return null;
+  }
+  return creds.access_token;
+}
+
+function tierLabelFromGemini(currentTier) {
+  if (!currentTier || !currentTier.id) return null;
+  const id = String(currentTier.id);
+  if (id === 'standard-tier') return 'Paid';
+  if (id === 'legacy-tier')   return 'Legacy';
+  if (id === 'free-tier')     return 'Free';
+  return id;
+}
+
+// Group Gemini's per-model buckets into rows. Filters out "not entitled"
+// buckets (remainingFraction === 0 + epoch resetTime — happens when Free-tier
+// users see Pro models in the response they can't actually access).
+function buildGeminiQuotaRows(buckets) {
+  const isEntitled = (b) => !(b.remainingFraction === 0 && /^1970-01-01/.test(String(b.resetTime || '')));
+  const families = [
+    { key: 'pro',        label: 'Pro models',        match: /pro/i,                                  exclude: null },
+    { key: 'flash-lite', label: 'Flash Lite models', match: /flash[-_.]?lite/i,                      exclude: null },
+    { key: 'flash',      label: 'Flash models',      match: /flash/i,                                exclude: /flash[-_.]?lite/i },
+  ];
+  const rows = [];
+  for (const fam of families) {
+    const matched = buckets.filter((b) => fam.match.test(b.modelId || '') && (!fam.exclude || !fam.exclude.test(b.modelId || '')) && isEntitled(b));
+    if (!matched.length) continue;
+    // Most-constrained bucket in this family wins (lowest remainingFraction).
+    const worst = matched.reduce((a, b) => (Number(a.remainingFraction) <= Number(b.remainingFraction) ? a : b));
+    const remaining = Math.max(0, Math.min(1, Number(worst.remainingFraction)));
+    rows.push({
+      key: fam.key,
+      label: fam.label,
+      win: {
+        usedPercent: (1 - remaining) * 100,
+        resetsAt: worst.resetTime || null,
+      },
+    });
+  }
+  return rows;
+}
+
+async function fetchGeminiOAuthQuota() {
+  const at = await ensureGeminiAccessToken();
+  if (!at) return null;
+
+  const headers = { 'Authorization': `Bearer ${at}`, 'Content-Type': 'application/json' };
+
+  // loadCodeAssist gives us tier + project ID in one call. Treat as best-effort
+  // — quota fetch can still proceed without the project hint (the endpoint
+  // accepts an empty body).
+  let project = null;
+  let tierLabel = null;
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 4000);
+    const res = await fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', {
+      method: 'POST', headers,
+      body: JSON.stringify({ metadata: { ideType: 'GEMINI_CLI', pluginType: 'GEMINI' } }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(to);
+    if (res.ok) {
+      const j = await res.json();
+      project = j.cloudaicompanionProject || null;
+      tierLabel = tierLabelFromGemini(j.currentTier);
+    }
+  } catch { /* non-fatal */ }
+
+  // retrieveUserQuota
+  let buckets;
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch('https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota', {
+      method: 'POST', headers,
+      body: JSON.stringify(project ? { project } : {}),
+      signal: ctrl.signal,
+    });
+    clearTimeout(to);
+    if (!res.ok) return null;
+    const j = await res.json();
+    buckets = Array.isArray(j.buckets) ? j.buckets : [];
+  } catch { return null; }
+
+  const rows = buildGeminiQuotaRows(buckets);
+  if (!rows.length && !tierLabel) return null;
+
+  return {
+    rows, // [{ key, label, win: { usedPercent, resetsAt } }]
+    planTier: tierLabel,
+  };
 }
 
 async function fetchGeminiCLILocal(days) {

@@ -402,8 +402,8 @@ function LLMUsageApp() {
               }}>Max</span>
             )}
           </div>
-          <div style={{ fontSize: 11, color: t.textMute, fontVariantNumeric: 'tabular-nums', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span>· {rangeLabel}</span>
+          <div className="tky-header-meta" style={{ fontSize: 11, color: t.textMute, fontVariantNumeric: 'tabular-nums', display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <span className="tky-range-label" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>· {rangeLabel}</span>
             {lastRefreshedAt && (
               <span title={new Date(lastRefreshedAt).toLocaleString()} style={{
                 display: 'inline-flex', alignItems: 'center', gap: 3,

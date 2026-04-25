@@ -230,15 +230,20 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
           ))}
         </div>
 
-        {/* Remaining balance (OpenRouter) / rate-limit quota (Codex) strip */}
-        {(data.balance || data.rateLimits) && (
-          <div style={{
-            background: 'rgba(52,211,153,0.08)',
-            border: '1px solid rgba(52,211,153,0.22)',
-            borderRadius: 8, padding: '8px 10px', marginBottom: 10,
-            display: 'flex', alignItems: 'center', gap: 10,
-            fontSize: 11, color: t.text,
-          }}>
+        {/* Remaining balance (OpenRouter) / rate-limit quota (Codex rollouts) strip.
+            Suppressed entirely when OAuth-derived `quota` is present (it owns
+            the visual treatment now via the dedicated block below). */}
+        {(data.balance || data.keyQuota || (data.rateLimits && !data.quota)) && (
+          <div
+            title={data.rateLimit ? `Rate limit: ${data.rateLimit.requests} req / ${data.rateLimit.interval}` : undefined}
+            style={{
+              background: 'rgba(52,211,153,0.08)',
+              border: '1px solid rgba(52,211,153,0.22)',
+              borderRadius: 8, padding: '8px 10px', marginBottom: 10,
+              display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10,
+              fontSize: 11, color: t.text,
+            }}
+          >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={t.green} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
               <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
             </svg>
@@ -251,7 +256,17 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
                 <span style={{ color: t.textMute }}> of {fmtMoney(data.balance.total)}</span>
               </span>
             )}
-            {data.rateLimits && !data.balance && (() => {
+            {data.keyQuota && (
+              <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                <span style={{ color: t.textMute }}>·</span>{' '}
+                <span style={{ color: t.textDim }}>Key cap</span>{' '}
+                <span style={{ fontWeight: 600, color: (data.keyQuota.usedPercent > 80 ? t.amber : t.text) }}>
+                  {fmtMoney(data.keyQuota.usage)}
+                </span>
+                <span style={{ color: t.textMute }}> of {fmtMoney(data.keyQuota.limit)}</span>
+              </span>
+            )}
+            {data.rateLimits && !data.balance && !data.quota && (() => {
               const p = data.rateLimits.primary;
               const s = data.rateLimits.secondary;
               const fmtPct = (v) => v != null ? `${Math.round(v)}%` : '—';
@@ -266,6 +281,136 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
             })()}
           </div>
         )}
+
+        {/* Claude OAuth quota — session/weekly windows + overage cap. */}
+        {data.quota && (() => {
+          const q = data.quota;
+          // Use the provider's brand gradient as the default fill — Claude reads
+          // warm-coral, OpenRouter would read violet, etc. Only escalate to amber
+          // when usage is getting tight (>80%) and red on actual overage (>100%).
+          const brand = (TOKENS.color.providers && TOKENS.color.providers[provider.id]) || [t.accent, t.accentHover];
+          const [brandLight, brandDark] = brand;
+          const fmtPct = (v) => v != null ? `${Math.round(v)}%` : '—';
+          const colorFor = (p) => p > 100 ? t.red : p > 80 ? t.amber : brandDark;
+          const labelColorFor = (p) => p > 100 ? t.red : p > 80 ? t.amber : t.text;
+
+          // Quota rows can come either as named fields (Claude/Codex) or as
+          // an explicit `rows` array (Gemini's per-model-family rollup).
+          const rows = Array.isArray(q.rows) ? q.rows.slice() : [];
+          if (!rows.length) {
+            if (q.fiveHour)     rows.push({ key: '5h',   label: '5-hour session', win: q.fiveHour });
+            if (q.sevenDay)     rows.push({ key: '7d',   label: '7-day weekly',   win: q.sevenDay });
+            if (q.sevenDayOpus) rows.push({ key: 'opus', label: 'Opus 7-day',     win: q.sevenDayOpus });
+          }
+
+          const e = q.extraUsage && q.extraUsage.enabled && q.extraUsage.limit > 0 ? q.extraUsage : null;
+          const ePct = e ? (e.used / e.limit) * 100 : null;
+
+          // Brand prefix shown next to the plan name in the header.
+          const brandPrefix = provider.id === 'claude-code' ? 'Claude'
+                            : provider.id === 'codex'       ? 'ChatGPT'
+                            : provider.id === 'gemini-cli'  ? 'Gemini'
+                            : provider.name;
+          const headerLabel = q.planTier
+            ? `${brandPrefix} ${q.planTier}`
+            : `${brandPrefix} subscription`;
+
+          const Bar = ({ pct }) => {
+            const raw = Math.max(0, pct || 0);
+            const w = Math.min(100, raw); // visual width caps at 100; label still shows the true %
+            const isOver = raw > 100;
+            const isHot  = raw > 80;
+            // Below 80%: brand gradient (warm Claude coral / brand colors).
+            // 80–100%: brand → amber gradient as a "warming up" cue.
+            // Above 100%: solid red, with a soft pulse so it reads as alert.
+            const fill = isOver
+              ? `linear-gradient(90deg, ${t.red}, ${t.red})`
+              : isHot
+                ? `linear-gradient(90deg, ${brandLight}, ${t.amber})`
+                : `linear-gradient(90deg, ${brandLight}, ${brandDark})`;
+            const glow = isOver ? `${t.red}66` : isHot ? `${t.amber}55` : `${brandDark}55`;
+            return (
+              <div style={{
+                height: 6, borderRadius: 999, overflow: 'hidden',
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid rgba(255,255,255,0.04)',
+              }}>
+                <div style={{
+                  width: `${w}%`, height: '100%',
+                  background: fill,
+                  borderRadius: 999,
+                  transition: 'width 500ms cubic-bezier(0.22, 1, 0.36, 1)',
+                  boxShadow: `0 0 8px ${glow}`,
+                }} />
+              </div>
+            );
+          };
+
+          return (
+            <div style={{
+              background: 'rgba(255,255,255,0.025)',
+              border: `1px solid ${t.cardBorder}`,
+              borderRadius: 10, padding: '10px 12px 12px', marginBottom: 10,
+              display: 'flex', flexDirection: 'column', gap: 10,
+            }}>
+              {/* Header — brand-tinted dot, plan name, optional credits chip */}
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 7,
+                fontSize: 9, color: t.textMute, textTransform: 'uppercase', letterSpacing: '0.06em',
+              }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <span style={{
+                    width: 6, height: 6, borderRadius: '50%',
+                    background: `linear-gradient(135deg, ${brandLight}, ${brandDark})`,
+                    boxShadow: `0 0 4px ${brandDark}88`,
+                  }} />
+                  <span>{headerLabel}</span>
+                </span>
+                {q.credits && (q.credits.unlimited || (q.credits.balance != null && q.credits.balance > 0)) && (
+                  <span style={{
+                    fontSize: 9, letterSpacing: '0.04em',
+                    color: t.text, fontWeight: 600,
+                    background: `linear-gradient(135deg, ${brandLight}22, ${brandDark}22)`,
+                    border: `1px solid ${brandDark}44`,
+                    borderRadius: 999, padding: '1px 8px',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {q.credits.unlimited ? '∞ Credits' : `${fmtMoney(q.credits.balance)} Credits`}
+                  </span>
+                )}
+              </div>
+
+              {rows.map((r) => (
+                <div key={r.key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 11 }}>
+                    <span style={{ color: t.textDim }}>{r.label}</span>
+                    <span style={{
+                      fontWeight: 600, fontVariantNumeric: 'tabular-nums',
+                      color: labelColorFor(r.win.usedPercent),
+                    }}>{fmtPct(r.win.usedPercent)}</span>
+                  </div>
+                  <Bar pct={r.win.usedPercent} />
+                </div>
+              ))}
+
+              {e && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 11 }}>
+                    <span style={{ color: t.textDim }}>Overage Cap</span>
+                    <span style={{
+                      fontWeight: 600, fontVariantNumeric: 'tabular-nums',
+                      color: labelColorFor(ePct),
+                    }}>
+                      {fmtMoney(e.used)}
+                      <span style={{ color: t.textMute, fontWeight: 400 }}> of {fmtMoney(e.limit)}</span>
+                    </span>
+                  </div>
+                  <Bar pct={ePct} />
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {trend.length > 1 && (
           <div style={{
@@ -530,6 +675,44 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
           <div style={{ minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <div style={{ fontWeight: 600, fontSize: 13 }}>{provider.name}</div>
+              {data && data.status && data.status.indicator && data.status.indicator !== 'none' && (() => {
+                // Statuspage indicator → color + short label.
+                const ind = data.status.indicator;
+                const palette = {
+                  minor:       { c: t.amber, label: 'Minor' },
+                  major:       { c: t.red,   label: 'Major' },
+                  critical:    { c: t.red,   label: 'Outage' },
+                  maintenance: { c: t.accent2, label: 'Maint.' },
+                };
+                const meta = palette[ind] || { c: t.amber, label: ind };
+                return (
+                  <span
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (data.status.pageUrl && onOpenExternal) onOpenExternal(data.status.pageUrl);
+                    }}
+                    title={`${data.status.description || meta.label} — click to open status page`}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                      fontSize: 9, fontWeight: 600, letterSpacing: '0.04em',
+                      textTransform: 'uppercase',
+                      color: meta.c,
+                      background: `${meta.c}1f`,
+                      border: `1px solid ${meta.c}55`,
+                      borderRadius: 999, padding: '1px 6px',
+                      cursor: data.status.pageUrl ? 'pointer' : 'default',
+                    }}
+                  >
+                    <span style={{
+                      width: 5, height: 5, borderRadius: '50%',
+                      background: meta.c,
+                      boxShadow: `0 0 4px ${meta.c}`,
+                      animation: ind === 'critical' || ind === 'major' ? 'llmpulse 1.4s ease-in-out infinite' : 'none',
+                    }} />
+                    {meta.label}
+                  </span>
+                );
+              })()}
               <div style={{
                 transform: expanded ? 'rotate(90deg)' : 'none',
                 transition: 'transform .2s', color: t.textMute, display: 'inline-flex',
