@@ -8,7 +8,14 @@ This document is the complete build record. Read it before making architectural 
 
 ## 0. Current state (session handoff)
 
-**Current shipped version:** `2.0.0` — on GitHub Releases + Netlify Blobs. Auto-update pipeline live.
+**Current shipped version:** `2.0.1` — on GitHub Releases + Netlify Blobs. Auto-update pipeline live.
+
+**Shipped in 2.0.1 (point release on top of the 2.0.0 Max + AI launch):**
+- **First-dismiss tray onboarding** — frameless transparent overlay window that appears below the menu-bar tray icon the first (and only the first) time a user dismisses the popover. Pulsing T glyph + bobbing arrow + floating message card explaining where Tokenly lives. `prefs.json:trayOnboardingShown` flag persists across sessions; main.js spawns a `focusable: false` BrowserWindow positioned via `tray.getBounds()`, auto-dismisses after 8s. New `index.html` mode `tray-onboarding`.
+- **Voice AI overlays the popover** — pressing ⌘⇧V (or clicking the Voice AI button in the header / chat composer) now opens voice mate centered over the Tokenly popover instead of in the top-right corner, and the popover stays visible behind it instead of collapsing. Required two changes: (a) the popover blur handler now skips auto-hide when focus moved to another Tokenly window (`voiceMateWin`, `onboardingWin`, `desktopWin`), and (b) `openVoiceMateWindow()` checks if the popover is visible and centers voice mate horizontally on it (60px down from popover top so the header stays reachable).
+- **Total-token math fixed** — usage snapshot now ships a precomputed `tokens.total` per provider (input + output + cache_write + cache_read) and a top-level `totals.total` rolled across providers. VoiceMate's system prompt now includes an explicit token schema with hard guidance to use `total` (never `input + output`) when answering "total token use" questions. Fixes the case where users with heavy prompt caching saw the AI undercount by 100x.
+- **Daily-tokens bar chart labels** — every non-zero bar in the trend section now shows its value as a small label above the bar (compact format: `1.5K` / `234M` / `1.2B`, tabular-nums). Today's bar gets the brightest color so the right-edge "now" anchor reads first; prior-period bars dim. Chart height bumped 32→56px to fit labels without crowding.
+- **Model-breakdown reconciliation** — the per-model row meta line now surfaces `cw` (cache writes) + `cr` (cache reads) consistently across all providers, replacing the divergent two-branch logic that was hiding cache reads on `claude-code` / `codex` / `gemini-cli` rows. Now the breakdown visibly sums to the right-side total.
 
 **What's working in production:**
 - Six providers tracked (3 local-file, 3 admin-API)

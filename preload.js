@@ -12,10 +12,12 @@ contextBridge.exposeInMainWorld('api', {
     if (typeof location === 'undefined') return 'popover';
     if (location.hash === '#desktop') return 'desktop';
     if (location.hash === '#voicemate') return 'voicemate';
+    if (location.hash === '#tray-onboarding') return 'tray-onboarding';
     return 'popover';
   },
   voiceMateClose: () => ipcRenderer.invoke('voicemate:close'),
   voiceMateOpen: () => ipcRenderer.invoke('voicemate:open'),
+  trayOnboardingClose: () => ipcRenderer.invoke('tray-onboarding:close'),
   revealDiagnostic: () => ipcRenderer.invoke('diagnostic:reveal'),
   setTrayTitle: (title) => ipcRenderer.invoke('tray:set-title', title),
   getPricingTables: () => ipcRenderer.invoke('pricing:get-tables'),

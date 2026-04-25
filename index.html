@@ -31,11 +31,16 @@
   <script type="text/babel" data-presets="react" src="app/components/ChatSheet.jsx"></script>
   <script type="text/babel" data-presets="react" src="app/components/HistorySheet.jsx"></script>
   <script type="text/babel" data-presets="react" src="app/components/VoiceMate.jsx"></script>
+  <script type="text/babel" data-presets="react" src="app/components/TrayOnboarding.jsx"></script>
   <script type="text/babel" data-presets="react" src="app/components/App.jsx"></script>
   <script type="text/babel" data-presets="react">
     const root = ReactDOM.createRoot(document.getElementById('root'));
     const mode = (typeof window.api?.mode === 'function') ? window.api.mode() : 'popover';
-    root.render(mode === 'voicemate' ? <VoiceMate /> : <LLMUsageApp />);
+    root.render(
+      mode === 'voicemate'        ? <VoiceMate /> :
+      mode === 'tray-onboarding'  ? <TrayOnboarding /> :
+                                    <LLMUsageApp />
+    );
   </script>
 </body>
 </html>

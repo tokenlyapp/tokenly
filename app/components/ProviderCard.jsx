@@ -566,22 +566,47 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
               </div>
               <div style={{ fontSize: 10, color: t.textDim, fontVariantNumeric: 'tabular-nums' }}>avg {fmt(dailyAvg)}</div>
             </div>
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 32, position: 'relative' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 56, position: 'relative' }}>
               {trend.map((v, i) => {
                 const isPrior = compareSplitIdx != null && i < compareSplitIdx;
+                const isToday = i === trend.length - 1;
                 const fill = v > 0
                   ? (isPrior
                       ? `linear-gradient(180deg, ${t.textDim} 0%, rgba(138,140,153,0.18) 100%)`
                       : `linear-gradient(180deg, ${t.accent} 0%, rgba(124,92,255,0.35) 100%)`)
                   : 'rgba(255,255,255,0.06)';
+                // Label visibility — show on every non-zero bar so the chart
+                // is readable at a glance. Today gets a slightly brighter
+                // label so the right edge (the "now" anchor) reads first.
+                const showLabel = v > 0;
                 return (
-                  <div key={i} style={{
-                    flex: 1,
-                    height: v > 0 ? `${Math.max(8, (v / trendMax) * 100)}%` : '6%',
-                    background: fill,
-                    borderRadius: 1.5,
-                    opacity: isPrior ? 0.55 : 1,
-                  }} title={fmt(v) + ' tokens' + (isPrior ? ' (prior period)' : '')} />
+                  <div
+                    key={i}
+                    title={fmt(v) + ' tokens' + (isPrior ? ' (prior period)' : '')}
+                    style={{
+                      flex: 1, height: '100%',
+                      display: 'flex', flexDirection: 'column',
+                      alignItems: 'center', justifyContent: 'flex-end',
+                      minWidth: 0, position: 'relative',
+                    }}
+                  >
+                    {showLabel && (
+                      <span style={{
+                        fontSize: 7.5, lineHeight: 1, marginBottom: 2,
+                        color: isToday ? t.text : (isPrior ? t.textMute : t.textDim),
+                        fontVariantNumeric: 'tabular-nums', fontWeight: isToday ? 600 : 500,
+                        opacity: isPrior ? 0.7 : 1,
+                        whiteSpace: 'nowrap',
+                      }}>{fmt(v)}</span>
+                    )}
+                    <div style={{
+                      width: '100%',
+                      height: v > 0 ? `${Math.max(8, (v / trendMax) * 86)}%` : '6%',
+                      background: fill,
+                      borderRadius: 1.5,
+                      opacity: isPrior ? 0.55 : 1,
+                    }} />
+                  </div>
                 );
               })}
               {compareSplitIdx != null && (
@@ -736,10 +761,21 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
                 </div>
               )}
               {(data.models || []).slice(0, 12).map((m, i, arr) => {
-                const tokens = (m.input || 0) + (m.output || 0) + (m.cache_read || 0) + (m.cached || 0);
-                const meta = provider.id === 'anthropic'
-                  ? `in ${fmt(m.input)} · out ${fmt(m.output)}${m.cache_creation ? ' · cw ' + fmt(m.cache_creation) : ''}${m.cache_read ? ' · cr ' + fmt(m.cache_read) : ''}`
-                  : `in ${fmt(m.input)}${m.cached ? ' (cached ' + fmt(m.cached) + ')' : ''} · out ${fmt(m.output)} · ${fmt(m.requests)} req`;
+                // Total = input + output + cache writes + cache reads. Surface
+                // every component in the meta line so the user can see how the
+                // big right-side number is composed (cache reads are the usual
+                // silent culprit when totals look way bigger than in/out alone).
+                const cacheWrite = (m.cache_creation || m.cached || 0);
+                const cacheRead  = (m.cache_read || 0);
+                const tokens = (m.input || 0) + (m.output || 0) + cacheRead + cacheWrite;
+                const metaParts = [
+                  `in ${fmt(m.input || 0)}`,
+                  `out ${fmt(m.output || 0)}`,
+                  cacheWrite > 0 ? `cw ${fmt(cacheWrite)}` : null,
+                  cacheRead  > 0 ? `cr ${fmt(cacheRead)}`  : null,
+                  m.requests > 0 ? `${fmt(m.requests)} req` : null,
+                ];
+                const meta = metaParts.filter(Boolean).join(' · ');
                 return (
                   <div key={m.model} style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',

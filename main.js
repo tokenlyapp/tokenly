@@ -99,10 +99,82 @@ function createPopoverWindow() {
   popoverWin.loadFile('index.html', { hash: 'popover' });
   popoverWin.on('blur', () => {
     if (Date.now() - popoverJustToggled < 250) return;
-    if (popoverWin && popoverWin.isVisible()) popoverWin.hide();
+    // Don't auto-hide when focus moved to a sibling Tokenly window (voice
+    // mate window, onboarding overlay, detached desktop, hidden export
+    // workers). Otherwise opening the voice AI from the popover would
+    // immediately collapse the popover behind it.
+    const focused = BrowserWindow.getFocusedWindow();
+    if (focused && focused !== popoverWin) {
+      const ours = [voiceMateWin, onboardingWin, desktopWin].filter(Boolean);
+      if (ours.includes(focused)) return;
+    }
+    if (popoverWin && popoverWin.isVisible()) {
+      popoverWin.hide();
+      maybeShowTrayOnboarding();
+    }
   });
   return popoverWin;
 }
+
+// ---- First-dismiss tray onboarding ---------------------------------------
+// The first time a user opens Tokenly and then clicks away, surface a brief
+// floating overlay below the tray icon explaining that Tokenly now lives in
+// the menu bar. Shown exactly once — flag persisted in prefs.json. Skipped
+// entirely after that, even if the user reinstalls the same prefs.json.
+let onboardingWin = null;
+function maybeShowTrayOnboarding() {
+  if (onboardingWin && !onboardingWin.isDestroyed()) return;
+  let prefs;
+  try {
+    const p = path.join(app.getPath('userData'), 'prefs.json');
+    prefs = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : {};
+  } catch { prefs = {}; }
+  if (prefs.trayOnboardingShown) return;
+  // Persist immediately so a quick rapid-blur sequence doesn't fire it twice.
+  savePref('trayOnboardingShown', true);
+
+  const ONBOARDING_W = 320;
+  const ONBOARDING_H = 180;
+
+  let x = 100, y = 40;
+  try {
+    const b = tray.getBounds();
+    const display = screen.getDisplayMatching(b);
+    const work = display.workArea;
+    // Center horizontally on the tray icon, sit just below the menu bar
+    // (tray.y + height + small gap). Clamp to the active display.
+    x = Math.round(b.x + b.width / 2 - ONBOARDING_W / 2);
+    x = Math.max(work.x + 8, Math.min(x, work.x + work.width - ONBOARDING_W - 8));
+    y = Math.round(b.y + b.height + 6);
+  } catch {}
+
+  onboardingWin = new BrowserWindow({
+    width: ONBOARDING_W,
+    height: ONBOARDING_H,
+    x, y,
+    show: false,
+    frame: false,
+    resizable: false, movable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    focusable: false,         // never steal focus from whatever the user just clicked into
+    acceptFirstMouse: true,   // first click hits the dismiss button without focusing window
+    webPreferences: commonWebPrefs,
+  });
+  onboardingWin.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
+  onboardingWin.setIgnoreMouseEvents(false);
+  onboardingWin.loadFile('index.html', { hash: 'tray-onboarding' });
+  onboardingWin.once('ready-to-show', () => onboardingWin.show());
+  onboardingWin.on('closed', () => { onboardingWin = null; });
+}
+
+ipcMain.handle('tray-onboarding:close', () => {
+  if (onboardingWin && !onboardingWin.isDestroyed()) onboardingWin.close();
+  return true;
+});
 
 function positionPopoverUnderTray() {
   if (!tray || !popoverWin) return;
@@ -3698,13 +3770,23 @@ ipcMain.handle('chat:usage-snapshot', async (_e, { days = 30 } = {}) => {
       if (q.credits)      quota.credits    = q.credits;
     }
 
+    // Precomputed totals — the voice AI consistently undercounted "total
+    // tokens" by ignoring cache reads (which can be 100x bigger than input
+    // for prompt-cached workloads). Surface the right number explicitly.
+    const cacheWrite = (t.cached || 0);
+    const cacheRead  = (t.cache_read || 0);
+    const total      = (t.input || 0) + (t.output || 0) + cacheRead + cacheWrite;
     out.providers[provider] = {
       tokens: {
         input: t.input || 0,
         output: t.output || 0,
-        cached: t.cached || 0,
-        cache_read: t.cache_read || 0,
+        cache_write: cacheWrite,
+        cache_read:  cacheRead,
         reasoning: t.reasoning || 0,
+        // `total` is the canonical "total token use" figure — sum of every
+        // billable / consumed token type. Always use this when answering
+        // total-token questions.
+        total,
       },
       cost: t.cost || 0,
       requests: t.requests || 0,
@@ -3715,6 +3797,9 @@ ipcMain.handle('chat:usage-snapshot', async (_e, { days = 30 } = {}) => {
     };
     out.totals.input  += t.input  || 0;
     out.totals.output += t.output || 0;
+    out.totals.cache_write = (out.totals.cache_write || 0) + cacheWrite;
+    out.totals.cache_read  = (out.totals.cache_read  || 0) + cacheRead;
+    out.totals.total       = (out.totals.total       || 0) + total;
     out.totals.cost   += t.cost   || 0;
   }
 
@@ -3782,16 +3867,36 @@ function openVoiceMateWindow() {
     webPreferences: commonWebPrefs,
   });
   voiceMateWin.loadFile('index.html', { hash: 'voicemate' });
-  // Center on the active display.
+  // Position: center over the Tokenly popover when it's visible (the user
+  // is engaging with the app — voice should feel like an overlay layered
+  // *over* it, not a separate destination off in a corner). When the
+  // popover isn't visible (⌘⇧V from another app), default to top-right of
+  // the active display so it doesn't crowd whatever's focused.
   try {
-    const cursor = screen.getCursorScreenPoint();
-    const display = screen.getDisplayNearestPoint(cursor);
     const wb = voiceMateWin.getBounds();
-    voiceMateWin.setPosition(
-      Math.round(display.workArea.x + display.workArea.width - wb.width - 24),
-      Math.round(display.workArea.y + 80),
-      false
-    );
+    const popoverVisible = popoverWin && !popoverWin.isDestroyed() && popoverWin.isVisible();
+    if (popoverVisible) {
+      const pb = popoverWin.getBounds();
+      const display = screen.getDisplayMatching(pb);
+      const work = display.workArea;
+      let x = Math.round(pb.x + pb.width / 2 - wb.width / 2);
+      // Sit a little below the top of the popover so the floating card
+      // doesn't blot out the popover's header (refresh / hamburger / etc.
+      // stay reachable underneath).
+      let y = Math.round(pb.y + 60);
+      // Clamp to the active display's work area.
+      x = Math.max(work.x + 8, Math.min(x, work.x + work.width  - wb.width  - 8));
+      y = Math.max(work.y + 8, Math.min(y, work.y + work.height - wb.height - 8));
+      voiceMateWin.setPosition(x, y, false);
+    } else {
+      const cursor = screen.getCursorScreenPoint();
+      const display = screen.getDisplayNearestPoint(cursor);
+      voiceMateWin.setPosition(
+        Math.round(display.workArea.x + display.workArea.width - wb.width - 24),
+        Math.round(display.workArea.y + 80),
+        false
+      );
+    }
   } catch {}
   voiceMateWin.once('ready-to-show', () => { voiceMateWin.show(); voiceMateWin.focus(); });
   voiceMateWin.on('closed', () => { voiceMateWin = null; });
