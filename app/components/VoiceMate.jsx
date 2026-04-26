@@ -52,6 +52,10 @@ function VoiceMate() {
   // at the start of every assistant turn so questions like "what did I spend
   // on Claude this week?" get answered from real numbers, not guesses.
   const usageSnapshotRef = useRefVm(null);
+  // Promise that resolves once the initial memory + usage builds finish.
+  // The first user turn awaits this so we don't ship a system prompt without
+  // the knowledge block, but the greeting itself doesn't have to wait.
+  const memoryReadyRef = useRefVm(Promise.resolve());
 
   // Running cost of THIS conversation — STT + LLM + TTS rolled up. All three
   // bill directly to the user's API account, not Tokenly. The footer shows
@@ -105,15 +109,22 @@ function VoiceMate() {
           setError('Add an OpenAI API key in Tokenly Chat to use voice (Whisper + TTS).');
           return;
         }
-        memoryRef.current = await buildMemoryBlock(convs || []);
-        try { usageSnapshotRef.current = await window.api.chatUsageSnapshot({ days: 30 }); }
-        catch { usageSnapshotRef.current = null; }
+        // Kick off memory + usage builds in the background — they're not
+        // needed for the greeting itself, only for the first user reply, so
+        // we shouldn't block the greeting on them. The first turn awaits
+        // memoryReadyRef before composing the system prompt.
+        memoryReadyRef.current = (async () => {
+          try { memoryRef.current = await buildMemoryBlock(convs || []); } catch {}
+          try { usageSnapshotRef.current = await window.api.chatUsageSnapshot({ days: 30 }); }
+          catch { usageSnapshotRef.current = null; }
+        })();
       } catch (err) {
         if (!cancelled) { setPhase('error'); setError(err?.message || String(err)); }
         return;
       }
       if (cancelled) return;
-      // Speak the greeting, then start listening.
+      // Speak the greeting, then start listening. Greeting fires immediately —
+      // memory/usage finish loading in the background while we speak.
       const greeting = "Hi, I'm Tokenly. How can I help you?";
       setMessages([{ role: 'assistant', content: greeting, timestamp: Date.now() }]);
       await speak(greeting, voiceRefValue());
@@ -130,16 +141,21 @@ function VoiceMate() {
   async function buildMemoryBlock(convList) {
     const recent = (convList || []).slice(0, 30);
     if (!recent.length) return '';
+    // Load all conversations in parallel — sequential awaits used to dominate
+    // first-greeting latency (one IPC round-trip per conversation, up to 30).
+    const loaded = await Promise.all(recent.map((c) =>
+      window.api.chatLoadConversation(c.id).then(
+        (full) => ({ c, full }),
+        () => ({ c, full: null }),
+      ),
+    ));
     const lines = [];
-    for (const c of recent) {
-      try {
-        const full = await window.api.chatLoadConversation(c.id);
-        if (!full) continue;
-        const lastAssistant = [...(full.messages || [])].reverse().find((m) => m.role === 'assistant' && m.content);
-        const snippet = lastAssistant ? String(lastAssistant.content).replace(/```[\s\S]*?```/g, ' [code] ').replace(/\s+/g, ' ').trim().slice(0, 220) : '';
-        const dateStr = new Date(c.updatedAt || c.createdAt || Date.now()).toISOString().slice(0, 10);
-        lines.push(`- ${dateStr} · ${c.title || 'Untitled'}${snippet ? ` — ${snippet}` : ''}`);
-      } catch {}
+    for (const { c, full } of loaded) {
+      if (!full) continue;
+      const lastAssistant = [...(full.messages || [])].reverse().find((m) => m.role === 'assistant' && m.content);
+      const snippet = lastAssistant ? String(lastAssistant.content).replace(/```[\s\S]*?```/g, ' [code] ').replace(/\s+/g, ' ').trim().slice(0, 220) : '';
+      const dateStr = new Date(c.updatedAt || c.createdAt || Date.now()).toISOString().slice(0, 10);
+      lines.push(`- ${dateStr} · ${c.title || 'Untitled'}${snippet ? ` — ${snippet}` : ''}`);
     }
     let block = lines.join('\n');
     if (block.length > 6000) block = block.slice(0, 6000) + '\n…';
@@ -393,6 +409,9 @@ function VoiceMate() {
     };
     if (window.api?.onChatStreamEvent) window.api.onChatStreamEvent(handler);
 
+    // Make sure the deferred initial memory/usage build has finished before
+    // we compose the system prompt for the first turn.
+    try { await memoryReadyRef.current; } catch {}
     // Refresh the usage snapshot so longer voice sessions pick up data
     // refreshes (the Tokenly main view polls every 60s; we piggyback).
     try { usageSnapshotRef.current = await window.api.chatUsageSnapshot({ days: 30 }); } catch {}

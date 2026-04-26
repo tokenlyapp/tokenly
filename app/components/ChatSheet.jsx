@@ -260,6 +260,12 @@ function ChatSheet({ open, onClose, onBack, onOpenExternal, isPro, onOpenHistory
   // Inline keys editor.
   const [showKeys, setShowKeys] = useStateCt(false);
 
+  // Live Tokenly knowledge: usage snapshot + memory digest of past conversations.
+  // Mirrors the context VoiceMate injects so the text chat can answer questions
+  // about the user's spend, models, quotas, and prior conversations too.
+  const memoryRef = useRefCt('');
+  const usageSnapshotRef = useRefCt(null);
+
   function emptyConv(prov, mdl) {
     return {
       id: newConvId(),
@@ -298,9 +304,38 @@ function ChatSheet({ open, onClose, onBack, onOpenExternal, isPro, onOpenHistory
       }
       const list = await window.api.chatListConversations();
       if (!cancelled) setConvList(list || []);
+      // Build the same context VoiceMate uses: a short digest of recent
+      // conversations + a 30-day usage snapshot. Both are best-effort and
+      // refreshed lazily on each send.
+      try { memoryRef.current = await buildMemoryDigest(list || []); } catch {}
+      try { usageSnapshotRef.current = await window.api.chatUsageSnapshot({ days: 30 }); } catch { usageSnapshotRef.current = null; }
     })();
     return () => { cancelled = true; };
   }, [open, isPro]);
+
+  // Compact "what we've talked about" digest from prior conversations.
+  // Same shape as VoiceMate.buildMemoryBlock so behavior matches across modes.
+  async function buildMemoryDigest(convList) {
+    const recent = (convList || []).slice(0, 30);
+    if (!recent.length) return '';
+    const loaded = await Promise.all(recent.map((c) =>
+      window.api.chatLoadConversation(c.id).then(
+        (full) => ({ c, full }),
+        () => ({ c, full: null }),
+      ),
+    ));
+    const lines = [];
+    for (const { c, full } of loaded) {
+      if (!full) continue;
+      const lastAssistant = [...(full.messages || [])].reverse().find((m) => m.role === 'assistant' && m.content);
+      const snippet = lastAssistant ? String(lastAssistant.content).replace(/```[\s\S]*?```/g, ' [code] ').replace(/\s+/g, ' ').trim().slice(0, 220) : '';
+      const dateStr = new Date(c.updatedAt || c.createdAt || Date.now()).toISOString().slice(0, 10);
+      lines.push(`- ${dateStr} · ${c.title || 'Untitled'}${snippet ? ` — ${snippet}` : ''}`);
+    }
+    let block = lines.join('\n');
+    if (block.length > 6000) block = block.slice(0, 6000) + '\n…';
+    return block;
+  }
 
   // Refresh keys meta after sheet returns from inline editing.
   const refreshKeys = useCallbackCt(async () => {
@@ -426,11 +461,28 @@ function ChatSheet({ open, onClose, onBack, onOpenExternal, isPro, onOpenHistory
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => ({ role: m.role, content: m.content || '' }));
 
+    // Refresh the usage snapshot opportunistically so the model always sees
+    // the freshest numbers (matches VoiceMate's per-turn refresh).
+    try { usageSnapshotRef.current = await window.api.chatUsageSnapshot({ days: 30 }); } catch {}
+
+    // Compose the effective system prompt: user's custom prompt (if any) plus
+    // the same Tokenly knowledge block the voice assistant gets — live usage
+    // data + a digest of recent conversations.
+    let effectiveSystem = system || '';
+    const usage = usageSnapshotRef.current;
+    const memory = memoryRef.current;
+    if (usage) {
+      effectiveSystem += `${effectiveSystem ? '\n\n' : ''}LIVE TOKENLY USAGE DATA (the user's real numbers as of ${usage.generatedAt}, last ${usage.windowDays} days):\n${JSON.stringify(usage)}\n\nIMPORTANT TOKEN SCHEMA — the user's "total tokens" question must include cache reads. Each provider's tokens object has these fields:\n  • input         — fresh input tokens\n  • output        — generated output tokens\n  • cache_write   — tokens written to prompt cache (billed at input rate)\n  • cache_read    — tokens served from prompt cache (billed at 0.1× input)\n  • reasoning     — internal reasoning tokens (counted as output for billing)\n  • total         — canonical sum of all of the above. ALWAYS USE THIS WHEN ANSWERING "TOTAL TOKEN USE" QUESTIONS.\n\nDo NOT compute total as input + output. That excludes cache, which is often the biggest component (a heavy prompt-caching user can have 100x more cache_read than input). When the user asks "how many tokens have I used", quote tokens.total. When they ask "how much input vs output", quote those separately. The same rule applies to totals.total at the top level for "across all providers".\n\nWhen the user asks about their token usage, costs, top models, quotas, or trends — use this data to answer with real numbers. If a value isn't in this snapshot, say you don't have that data rather than making one up.`;
+    }
+    if (memory) {
+      effectiveSystem += `${effectiveSystem ? '\n\n' : ''}PAST CONVERSATIONS — what the user has been working on across past Tokenly conversations:\n${memory}\n\nIf the user references something earlier or from past conversations, use this context. Do not bring it up unprompted.`;
+    }
+
     await window.api.chatStream({
       streamId: id,
       provider, model,
       messages: outgoing,
-      system: system || undefined,
+      system: effectiveSystem || undefined,
       webSearch,
     });
   }, [draft, streaming, keysMeta, provider, model, system, conv.messages, webSearch]);
@@ -1221,12 +1273,16 @@ function Message({ t, msg, onOpenExternal }) {
   // empty bubble that previously made the UI feel dead between send and first
   // token. Once tokens start flowing, the dots drop off automatically.
   const isThinking = isAssistant && msg.streaming && !msg.content;
-  const thinkingLabel = msg.webSearch ? 'Searching the web' : 'Thinking';
   return (
-    <div style={{ marginBottom: 12 }}>
+    <div style={{
+      marginBottom: 12,
+      display: 'flex', flexDirection: 'column',
+      alignItems: isUser ? 'flex-end' : 'flex-start',
+    }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4,
         fontSize: 9.5, color: t.textMute, letterSpacing: '0.04em', textTransform: 'uppercase',
+        flexDirection: isUser ? 'row-reverse' : 'row',
       }}>
         {isUser ? 'You' : (msg.provider ? PROVIDER_LABELS[msg.provider]?.name : 'Assistant')}
         {msg.streaming && (
@@ -1235,19 +1291,14 @@ function Message({ t, msg, onOpenExternal }) {
             animation: 'llmpulse 1.2s ease-in-out infinite',
           }} />
         )}
-        {isThinking && (
-          <span style={{
-            fontSize: 9, color: t.textDim, letterSpacing: '0.04em',
-            marginLeft: 2,
-            textTransform: 'none',
-          }}>{thinkingLabel}…</span>
-        )}
       </div>
       <div style={{
         background: isUser ? 'rgba(124,92,255,0.10)' : t.card,
         border: `1px solid ${isUser ? 'rgba(124,92,255,0.25)' : t.cardBorder}`,
-        borderRadius: 10, padding: '10px 12px',
+        borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px',
+        padding: '10px 12px',
         userSelect: 'text',
+        maxWidth: '82%',
       }}>
         {msg.error ? (
           <div style={{ fontSize: 11, color: t.red, fontFamily: TOKENS.type.mono }}>

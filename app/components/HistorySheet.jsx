@@ -1,12 +1,11 @@
-// HistorySheet — unified read-only browser for past Tokenly chat conversations
-// AND Claude Code sessions (~/.claude/projects/*.jsonl). Reuses the markdown
-// rendering from ChatSheet for the transcript view.
+// HistorySheet — read-only browser for past Tokenly chat conversations
+// (the chats started inside this app). Reuses the markdown rendering from
+// ChatSheet for the transcript view.
 const { useState: useStateH, useEffect: useEffectH, useMemo: useMemoH } = React;
 
 function HistorySheet({ open, onClose, onBack, onOpenExternal, isPro }) {
   const t = TOKENS.color;
   const isPopover = (typeof window.api?.mode === 'function') ? window.api.mode() === 'popover' : false;
-  const [tab, setTab] = useStateH('all'); // all | tokenly | claude
   const [items, setItems] = useStateH([]);
   const [loading, setLoading] = useStateH(false);
   const [search, setSearch] = useStateH('');
@@ -18,38 +17,28 @@ function HistorySheet({ open, onClose, onBack, onOpenExternal, isPro }) {
     if (!open || !isPro) return;
     setLoading(true);
     (async () => {
-      const [tk, cc] = await Promise.all([
-        window.api.chatListConversations().catch(() => []),
-        window.api.chatListClaudeSessions({ limit: 200 }).catch(() => []),
-      ]);
-      const merged = [...(tk || []), ...(cc || [])]
-        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-      setItems(merged);
+      const tk = await window.api.chatListConversations().catch(() => []);
+      const sorted = [...(tk || [])].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      setItems(sorted);
       setLoading(false);
     })();
   }, [open, isPro]);
 
   const filtered = useMemoH(() => {
-    let arr = items;
-    if (tab === 'tokenly') arr = arr.filter((i) => i.source === 'tokenly');
-    else if (tab === 'claude') arr = arr.filter((i) => i.source === 'claude-code');
     const q = search.trim().toLowerCase();
-    if (q) arr = arr.filter((i) => (i.title || '').toLowerCase().includes(q) || (i.project || '').toLowerCase().includes(q));
-    return arr;
-  }, [items, tab, search]);
+    if (!q) return items;
+    return items.filter((i) => (i.title || '').toLowerCase().includes(q) || (i.project || '').toLowerCase().includes(q));
+  }, [items, search]);
 
   useEffectH(() => {
     if (!selectedId) { setTranscript(null); return; }
     setTranscriptLoading(true);
     (async () => {
-      const it = items.find((i) => i.id === selectedId);
-      let conv = null;
-      if (it?.source === 'claude-code') conv = await window.api.chatLoadClaudeSession(selectedId);
-      else conv = await window.api.chatLoadConversation(selectedId);
+      const conv = await window.api.chatLoadConversation(selectedId);
       setTranscript(conv);
       setTranscriptLoading(false);
     })();
-  }, [selectedId, items]);
+  }, [selectedId]);
 
   if (!open) return null;
 
@@ -106,41 +95,6 @@ function HistorySheet({ open, onClose, onBack, onOpenExternal, isPro }) {
           />
         </div>
 
-        {/* Tabs */}
-        <div style={{
-          padding: '6px 12px', borderBottom: `1px solid ${t.cardBorder}`,
-          display: 'flex', gap: 4, flexShrink: 0,
-        }}>
-          {[
-            { id: 'all', label: 'All', count: items.length },
-            { id: 'tokenly', label: 'Tokenly chats', count: items.filter((i) => i.source === 'tokenly').length },
-            { id: 'claude', label: 'Claude Code', count: items.filter((i) => i.source === 'claude-code').length },
-          ].map((tg) => {
-            const active = tab === tg.id;
-            return (
-              <button
-                key={tg.id}
-                onClick={() => { setTab(tg.id); setSelectedId(null); }}
-                style={{
-                  background: active ? 'rgba(124,92,255,0.18)' : 'transparent',
-                  border: `1px solid ${active ? 'rgba(124,92,255,0.4)' : t.cardBorder}`,
-                  color: active ? t.text : t.textDim,
-                  padding: '4px 10px', borderRadius: 7,
-                  fontSize: 10.5, fontWeight: 500, cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  display: 'inline-flex', alignItems: 'center', gap: 5,
-                }}
-              >
-                {tg.label}
-                <span style={{
-                  fontSize: 9, color: t.textMute,
-                  fontVariantNumeric: 'tabular-nums',
-                }}>{tg.count}</span>
-              </button>
-            );
-          })}
-        </div>
-
         {/* Body */}
         <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
           {/* List */}
@@ -170,7 +124,6 @@ function HistorySheet({ open, onClose, onBack, onOpenExternal, isPro }) {
                 onMouseLeave={(e) => { if (i.id !== selectedId) e.currentTarget.style.background = 'transparent'; }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}>
-                  <SourceTag source={i.source} t={t} />
                   {i.voiceMode && <span style={{ color: t.accent2, fontSize: 9 }} title="Voice conversation">●</span>}
                   <div style={{
                     fontSize: 11, fontWeight: 500, color: t.text,
@@ -215,23 +168,6 @@ function HistorySheet({ open, onClose, onBack, onOpenExternal, isPro }) {
   );
 }
 window.HistorySheet = HistorySheet;
-
-function SourceTag({ source, t }) {
-  const meta = source === 'claude-code'
-    ? { label: 'CC', color: '#d97757' }
-    : { label: 'TK', color: t.accent };
-  return (
-    <span style={{
-      width: 18, height: 14, borderRadius: 3,
-      background: `${meta.color}22`,
-      border: `1px solid ${meta.color}55`,
-      color: meta.color,
-      fontSize: 8, fontWeight: 700, letterSpacing: '0.04em',
-      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-      flexShrink: 0,
-    }}>{meta.label}</span>
-  );
-}
 
 function shortModel(m) {
   if (!m) return '';
