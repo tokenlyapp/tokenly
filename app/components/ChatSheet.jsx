@@ -230,6 +230,9 @@ function ChatSheet({ open, onClose, onBack, onOpenExternal, isPro, onOpenHistory
 
   // Composer.
   const [draft, setDraft] = useStateCt('');
+  // Mirror of `draft` for sync reads from non-React callbacks (mic handlers).
+  const draftRef = useRefCt('');
+  useEffectCt(() => { draftRef.current = draft; }, [draft]);
   const [streaming, setStreaming] = useStateCt(false);
   const [pendingId, setPendingId] = useStateCt(null);
   const streamRef = useRefCt({ id: null });
@@ -435,6 +438,10 @@ function ChatSheet({ open, onClose, onBack, onOpenExternal, isPro, onOpenHistory
 
   // ------- Send message ----------------------------------------------------
   const sendMessage = useCallbackCt(async (textOverride) => {
+    // If the user pressed Enter while dictating, stop dictation immediately
+    // so the recorder shuts down and we don't overwrite their draft with a
+    // late Whisper pass after they've already submitted.
+    if (liveTranscribingRef.current) stopLiveTranscription({ cancel: true });
     const text = (textOverride != null ? textOverride : draft).trim();
     if (!text || streaming) return;
     if (!keysMeta[provider]?.present) {
@@ -461,9 +468,13 @@ function ChatSheet({ open, onClose, onBack, onOpenExternal, isPro, onOpenHistory
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => ({ role: m.role, content: m.content || '' }));
 
-    // Refresh the usage snapshot opportunistically so the model always sees
-    // the freshest numbers (matches VoiceMate's per-turn refresh).
-    try { usageSnapshotRef.current = await window.api.chatUsageSnapshot({ days: 30 }); } catch {}
+    // Kick off a usage-snapshot refresh in the background so the NEXT turn
+    // sees fresher numbers, but DON'T await it — the snapshot loops through
+    // every provider's usage API serially and a slow/hanging upstream would
+    // otherwise stall the entire send.
+    window.api.chatUsageSnapshot({ days: 30 })
+      .then((snap) => { if (snap) usageSnapshotRef.current = snap; })
+      .catch(() => {});
 
     // Compose the effective system prompt: user's custom prompt (if any) plus
     // the same Tokenly knowledge block the voice assistant gets — live usage
@@ -528,6 +539,42 @@ function ChatSheet({ open, onClose, onBack, onOpenExternal, isPro, onOpenHistory
     for (const c of cands) try { if (MediaRecorder.isTypeSupported(c)) return c; } catch {}
     return '';
   }
+
+  // Concatenate the user's prefix with a Whisper transcript. Inserts a
+  // single space between them when both are non-empty AND the prefix
+  // doesn't already end in whitespace/newline — so "Today I want to" +
+  // "go to the store" becomes "Today I want to go to the store" but
+  // "Today I want to " (already has trailing space) stays single-spaced.
+  function joinDraft(prefix, transcript) {
+    if (!prefix) return transcript;
+    if (!transcript) return prefix;
+    if (/\s$/.test(prefix)) return prefix + transcript;
+    return prefix + ' ' + transcript;
+  }
+
+  // Whisper is famous for emitting fluent phantom text on silence/noise:
+  // "Thanks for watching", "you", ".", "Bye", subtitle credits, etc. Strip
+  // these so they don't end up in the user's draft. Conservative: only
+  // matches very short outputs, never strips real-looking text.
+  function filterWhisperHallucinations(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    // Strip leading/trailing punctuation for the comparison only.
+    const norm = raw.toLowerCase().replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, '');
+    if (!norm) return '';
+    const KNOWN = new Set([
+      'you', 'thank you', 'thanks', 'thanks for watching',
+      'thanks for watching!', 'thank you for watching', 'bye', 'goodbye',
+      'mhm', 'mm', 'uh', 'um', 'hmm', 'yeah', 'ok', 'okay',
+      'subtitles by the amara.org community',
+      'transcription by castingwords',
+      'music', '[music]', '♪', '♪♪',
+    ]);
+    if (KNOWN.has(norm)) return '';
+    // Anything ≤ 3 chars after normalization is almost certainly noise.
+    if (norm.length <= 3) return '';
+    return raw;
+  }
   function arrayBufferToBase64(ab) {
     const bytes = new Uint8Array(ab);
     let s = '';
@@ -544,67 +591,179 @@ function ChatSheet({ open, onClose, onBack, onOpenExternal, isPro, onOpenHistory
       return;
     }
     setLiveError(null);
+    // Flip the UI immediately — getUserMedia can take 200-500ms+ on macOS
+    // and the button felt unresponsive while we waited. If mic acquisition
+    // fails below we roll the state back.
+    liveTranscribingRef.current = true;
+    setLiveTranscribing(true);
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
     } catch (err) {
+      liveTranscribingRef.current = false;
+      setLiveTranscribing(false);
       setLiveError('Microphone access was denied. Allow Tokenly in System Settings → Privacy → Microphone.');
       return;
     }
     const mime = pickMime();
-    const mr = new MediaRecorder(stream, { mimeType: mime });
-    const ctx = { mr, stream, chunks: [], mime: mr.mimeType, inFlight: false, cancelled: false };
+    // Capture whatever's already in the composer as the prefix so dictation
+    // appends rather than replaces. The prefix is stored RAW (no trailing
+    // space added) — joinDraft() below inserts a separator only when
+    // concatenating with a transcript. Earlier versions stuffed a space
+    // into the prefix itself, which fought every backspace: the user would
+    // delete a char and the watch effect would immediately re-add the
+    // space, so deletes appeared to do nothing.
+    const startingDraft = draftRef.current || '';
+    const ctx = {
+      mr: null, stream, chunks: [], mime, inFlight: false, cancelled: false,
+      // The text to prepend in front of every Whisper transcription. Stored
+      // raw — see joinDraft() for separator handling.
+      prefix: startingDraft,
+      // The most recent transcription we've written. Used to detect manual
+      // edits by comparing draftRef.current to (prefix + lastTranscript).
+      lastTranscript: '',
+      // Bumped on every recorder restart. transcribeTail captures the value
+      // at request-time and drops the response if a restart has happened
+      // while it was waiting on the API — without this, a Whisper response
+      // from the pre-edit audio resolves AFTER we've rebased, and re-appends
+      // the just-deleted text on top of the new prefix.
+      generation: 0,
+    };
     liveRecRef.current = ctx;
-    liveTranscribingRef.current = true;
-    setLiveTranscribing(true);
 
     // Each timeslice fires dataavailable; we transcribe the whole tail so the
     // composer keeps showing the most accurate reading of everything spoken.
+    // Silence/noise hallucinations are filtered downstream by
+    // filterWhisperHallucinations rather than gated by a VAD probe — the
+    // probe was unreliable on first-mount and would freeze dictation.
     const transcribeTail = async () => {
       if (ctx.cancelled || ctx.inFlight || !ctx.chunks.length) return;
       ctx.inFlight = true;
+      const myGen = ctx.generation;
       try {
         const blob = new Blob(ctx.chunks, { type: ctx.mime });
         const ab = await blob.arrayBuffer();
         const b64 = arrayBufferToBase64(ab);
         const res = await window.api.chatTranscribe({ audioB64: b64, mime: ctx.mime, filename: 'live.webm' });
+        // Drop the response if the recorder was restarted while we were
+        // waiting on the API — the audio behind this transcription is from
+        // a now-stale segment that no longer matches ctx.prefix.
+        if (myGen !== ctx.generation) { ctx.inFlight = false; return; }
         if (!ctx.cancelled && res.ok && typeof res.text === 'string') {
-          setDraft(res.text.trim());
+          const cleaned = filterWhisperHallucinations(res.text);
+          if (cleaned) {
+            // Detect a manual edit: if the composer no longer matches what
+            // we last wrote (joinDraft(prefix, lastTranscript)), the user
+            // changed it (backspace, retype, paste). Re-baseline the prefix
+            // to whatever they left in the box and reset the recorder so
+            // subsequent dictation appends to their edit instead of
+            // reverting it.
+            const expected = joinDraft(ctx.prefix, ctx.lastTranscript);
+            const cur = draftRef.current;
+            if (cur !== expected) {
+              ctx.prefix = cur || '';
+              ctx.lastTranscript = '';
+              restartRecorder();
+            } else {
+              ctx.lastTranscript = cleaned;
+              setDraft(joinDraft(ctx.prefix, cleaned));
+            }
+          }
         }
       } catch {}
       ctx.inFlight = false;
     };
 
-    mr.ondataavailable = (e) => {
-      if (e.data && e.data.size) ctx.chunks.push(e.data);
-      // Fire-and-forget; gated by the inFlight flag so a slow Whisper call
-      // doesn't queue up overlapping requests.
-      if (!ctx.cancelled) transcribeTail();
-    };
-    mr.onstop = async () => {
-      try { for (const tr of stream.getTracks()) tr.stop(); } catch {}
-      // One last pass on the full audio so the final draft reflects everything
-      // (otherwise the trailing 0–2s of speech can be missing).
-      if (!ctx.cancelled) {
-        // Wait for any in-flight to finish, then do a fresh pass.
-        const waitIdle = () => new Promise((r) => {
-          const t = setInterval(() => { if (!ctx.inFlight) { clearInterval(t); r(); } }, 80);
-          setTimeout(() => { clearInterval(t); r(); }, 4000);
-        });
-        await waitIdle();
-        await transcribeTail();
+    function restartRecorder() {
+      // Tear down any prior recorder (no end-of-session pass — that's only
+      // for true stop) and start a fresh one on the same MediaStream so the
+      // chunks accumulated from here on form a valid standalone webm.
+      const old = ctx.mr;
+      if (old) {
+        old.ondataavailable = null;
+        old.onstop = null;
+        try { if (old.state !== 'inactive') old.stop(); } catch {}
       }
-      liveRecRef.current = null;
-      liveTranscribingRef.current = false;
-      setLiveTranscribing(false);
-    };
-    mr.start(2000); // emit a chunk every 2 seconds
+      // Invalidate any in-flight Whisper call against the prior audio.
+      ctx.generation++;
+      ctx.chunks = [];
+      const mr = new MediaRecorder(stream, { mimeType: mime });
+      mr.ondataavailable = (e) => {
+        if (e.data && e.data.size) ctx.chunks.push(e.data);
+        if (!ctx.cancelled) transcribeTail();
+      };
+      mr.onstop = async () => {
+        // Only the *current* recorder's onstop runs finalization — skip if a
+        // restart already replaced us (the user edited the draft).
+        if (mr !== ctx.mr) return;
+        try { for (const tr of stream.getTracks()) tr.stop(); } catch {}
+        if (!ctx.cancelled && ctx.chunks.length) {
+          const waitIdle = () => new Promise((r) => {
+            const t = setInterval(() => { if (!ctx.inFlight) { clearInterval(t); r(); } }, 80);
+            setTimeout(() => { clearInterval(t); r(); }, 4000);
+          });
+          await waitIdle();
+          await transcribeTail();
+        }
+        liveRecRef.current = null;
+      };
+      ctx.mr = mr;
+      // Brief warmup: macOS mic devices return silence (or click noise) for
+      // the first ~150-250ms after acquisition, especially on the first
+      // mic-on after launch. Starting MediaRecorder immediately means that
+      // dead air is the *entire* contents of chunk 1 — Whisper transcribes
+      // nothing useful and the user's first word(s) are lost. A short
+      // pre-start delay lets the audio device settle before we begin
+      // capturing chunks. Subsequent restarts (on edit) skip the warmup
+      // since the device is already warm.
+      const isFirstStart = ctx.warmedUp !== true;
+      const warmup = isFirstStart ? 250 : 0;
+      ctx.warmedUp = true;
+      const startThis = mr;
+      setTimeout(() => {
+        // Don't start if we were cancelled or replaced during the warmup.
+        if (ctx.cancelled || startThis !== ctx.mr) return;
+        // 750ms chunks: snappy enough that words appear in near-real-time,
+        // but not so fast that we queue a Whisper round-trip per syllable.
+        // The inFlight gate above naturally drops chunks if the API can't
+        // keep up.
+        try { startThis.start(750); } catch {}
+      }, warmup);
+    }
+    // Stash the restart helper on ctx so the draft-watcher effect can call
+    // it the instant the user edits (no need to wait for the next Whisper
+    // round-trip to discover the edit).
+    ctx.restart = restartRecorder;
+
+    restartRecorder();
   }, [keysMeta]);
+
+  // Watch the draft while dictating. The instant the user edits (backspace,
+  // retype, paste) rebase the prefix to whatever's now in the box, bump the
+  // generation so any in-flight Whisper response against the old audio is
+  // dropped, and restart the recorder so subsequent speech transcribes from
+  // a fresh audio stream that won't re-render the deleted text on top of
+  // the new prefix.
+  useEffectCt(() => {
+    if (!liveTranscribing) return;
+    const ctx = liveRecRef.current;
+    if (!ctx) return;
+    const expected = joinDraft(ctx.prefix, ctx.lastTranscript);
+    if (draft === expected) return;
+    ctx.prefix = draft || '';
+    ctx.lastTranscript = '';
+    ctx.generation++;
+    if (ctx.restart) ctx.restart();
+  }, [draft, liveTranscribing]);
 
   const stopLiveTranscription = useCallbackCt((opts = {}) => {
     const ctx = liveRecRef.current;
+    // Flip UI state immediately — the user clicked off, the button shouldn't
+    // sit "on" for the 0-4s it takes the final Whisper pass to resolve.
+    liveTranscribingRef.current = false;
+    setLiveTranscribing(false);
     if (!ctx) return;
     if (opts.cancel) ctx.cancelled = true;
     try { ctx.mr.stop(); } catch {}

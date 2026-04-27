@@ -3128,6 +3128,9 @@ ipcMain.handle('chat:set-key', (_e, provider, value) => {
   const all = loadKeys();
   if (!value) delete all[chatKeyId(provider)]; else all[chatKeyId(provider)] = value;
   saveKeys(all);
+  // Bust the Google model cache so the next chat-sheet open re-discovers
+  // models with the new key (or falls back if removed).
+  if (provider === 'google') googleModelsCache = null;
   return true;
 });
 
@@ -3148,12 +3151,105 @@ const CHAT_MODELS = {
     { id: 'claude-haiku-4-5',        label: 'Claude Haiku 4.5',  desc: 'Fast + cheap' },
   ],
   google: [
-    { id: 'gemini-2.5-pro',     label: 'Gemini 2.5 Pro',    desc: 'Most capable' },
-    { id: 'gemini-2.5-flash',   label: 'Gemini 2.5 Flash',  desc: 'Fast' },
-    { id: 'gemini-2.0-flash',   label: 'Gemini 2.0 Flash',  desc: 'Cheapest' },
+    { id: 'gemini-2.5-pro',        label: 'Gemini 2.5 Pro',        desc: 'Most capable' },
+    { id: 'gemini-2.5-flash',      label: 'Gemini 2.5 Flash',      desc: 'Fast' },
+    { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', desc: 'Cheapest' },
+    { id: 'gemini-2.0-flash',      label: 'Gemini 2.0 Flash',      desc: 'Legacy' },
   ],
 };
-ipcMain.handle('chat:list-models', () => CHAT_MODELS);
+
+// Live model discovery for Google — hit ListModels with the user's key so the
+// dropdown reflects whatever Google currently exposes (gemini-3-* preview ids
+// flip in/out of availability frequently). Falls back to the curated list if
+// the call fails or the key is missing. 5-min cache so repeated chat-sheet
+// opens don't spam the API.
+let googleModelsCache = null;
+async function listGoogleChatModels() {
+  if (googleModelsCache && Date.now() - googleModelsCache.at < 5 * 60 * 1000) {
+    return googleModelsCache.list;
+  }
+  const keys = loadKeys();
+  const key = keys[chatKeyId('google')];
+  if (!key) return CHAT_MODELS.google;
+  try {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 3500);
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=200`,
+      { signal: ctrl.signal },
+    );
+    clearTimeout(timeout);
+    if (!res.ok) {
+      // Cache the failure too so we don't slow every chat-sheet open by
+      // re-hitting a key that just got revoked.
+      googleModelsCache = { at: Date.now(), list: CHAT_MODELS.google };
+      return CHAT_MODELS.google;
+    }
+    const json = await res.json();
+    const all = Array.isArray(json.models) ? json.models : [];
+    // Keep any Gemini model that supports both generateContent and the
+    // streaming endpoint (Tokenly uses streamGenerateContent). Explicitly
+    // exclude the legacy 1.0 family (`gemini-pro`, `gemini-pro-vision`) —
+    // those throw "Multiturn chat is not enabled" — and the helper SKUs
+    // (embedding, aqa, imagen, tuning, vision-only). Everything else is
+    // surfaced so newly-released versions show up automatically.
+    const seen = new Set();
+    const out = [];
+    for (const m of all) {
+      const id = String(m.name || '').replace(/^models\//, '');
+      if (!id.startsWith('gemini-')) continue;
+      const methods = m.supportedGenerationMethods || [];
+      if (!methods.includes('generateContent')) continue;
+      if (!methods.includes('streamGenerateContent')) continue;
+      // Helper SKUs that aren't chat models.
+      if (/embedding|aqa|imagen|tuning/i.test(id)) continue;
+      // Legacy 1.0 chat models — fail multi-turn on the v1beta endpoint.
+      // (`gemini-pro`, `gemini-pro-vision`, `gemini-1.0-pro*`)
+      if (id === 'gemini-pro' || id === 'gemini-pro-vision') continue;
+      if (/^gemini-1\.0-/.test(id)) continue;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const label = m.displayName || id;
+      out.push({ id, label });
+    }
+    if (!out.length) return CHAT_MODELS.google;
+    // Sort newest-version first so 3.x > 2.5 > 2.0 > 1.5, then pro before
+    // flash, dated/preview last.
+    const versionScore = (id) => {
+      const m = id.match(/gemini-(\d+(?:\.\d+)?)/);
+      return m ? parseFloat(m[1]) : 0;
+    };
+    const tierScore = (id) => {
+      if (/-pro/.test(id) && !/-flash/.test(id)) return 3;
+      if (/-flash(?!-lite)/.test(id)) return 2;
+      if (/-flash-lite/.test(id)) return 1;
+      return 0;
+    };
+    out.sort((a, b) => {
+      const v = versionScore(b.id) - versionScore(a.id);
+      if (v) return v;
+      const t = tierScore(b.id) - tierScore(a.id);
+      if (t) return t;
+      // Stable models (no preview/date suffix) before preview/dated.
+      const aPreview = /preview|exp|\d{4}/.test(a.id);
+      const bPreview = /preview|exp|\d{4}/.test(b.id);
+      if (aPreview !== bPreview) return aPreview ? 1 : -1;
+      return a.id.localeCompare(b.id);
+    });
+    googleModelsCache = { at: Date.now(), list: out };
+    return out;
+  } catch {
+    googleModelsCache = { at: Date.now(), list: CHAT_MODELS.google };
+    return CHAT_MODELS.google;
+  }
+}
+
+ipcMain.handle('chat:list-models', async () => {
+  // Run Google discovery in parallel; OpenAI + Anthropic stay curated since
+  // their list endpoints aren't worth the round-trip for a stable list.
+  const google = await listGoogleChatModels();
+  return { ...CHAT_MODELS, google };
+});
 
 // --- SSE line splitter ------------------------------------------------------
 // Web Streams arrive as Uint8Array chunks; SSE events are delimited by blank
@@ -3422,17 +3518,27 @@ async function* streamGoogle({ key, model, messages, system, webSearch, signal }
     return;
   }
   let lastUsage = null;
+  let lastFinishReason = '';
+  let anyText = false;
   const citations = [];
   try {
     for await (const ev of sseEvents(res)) {
       let json;
       try { json = JSON.parse(ev.data); } catch { continue; }
-      const parts = json.candidates?.[0]?.content?.parts;
+      // Promote a top-level error so the user sees why the stream is dead
+      // instead of a silent empty bubble.
+      if (json.error?.message) {
+        yield { type: 'error', message: `Google: ${json.error.message}` };
+        return;
+      }
+      const cand = json.candidates?.[0];
+      const parts = cand?.content?.parts;
       if (parts) {
         for (const p of parts) {
-          if (p.text) yield { type: 'delta', text: p.text };
+          if (p.text) { yield { type: 'delta', text: p.text }; anyText = true; }
         }
       }
+      if (cand?.finishReason) lastFinishReason = cand.finishReason;
       const grounding = json.candidates?.[0]?.groundingMetadata;
       if (grounding && Array.isArray(grounding.groundingChunks)) {
         for (const g of grounding.groundingChunks) {
@@ -3456,6 +3562,12 @@ async function* streamGoogle({ key, model, messages, system, webSearch, signal }
       output: (lastUsage.candidatesTokenCount || 0) + (lastUsage.thoughtsTokenCount || 0),
       cached: lastUsage.cachedContentTokenCount || 0,
     };
+  }
+  // No text came back at all — surface the finishReason so the user knows
+  // why (SAFETY, RECITATION, MAX_TOKENS, etc.) instead of an empty bubble.
+  if (!anyText && lastFinishReason && lastFinishReason !== 'STOP') {
+    yield { type: 'error', message: `Google returned no text (finishReason: ${lastFinishReason}).` };
+    return;
   }
   yield { type: 'done' };
 }
@@ -3635,18 +3747,29 @@ ipcMain.handle('chat:transcribe', async (_e, { audioB64, mime, filename }) => {
   if (!audioB64) return { ok: false, error: 'no audio' };
   try {
     const buf = Buffer.from(audioB64, 'base64');
-    const blob = new Blob([buf], { type: mime || 'audio/webm' });
-    const form = new FormData();
-    form.append('file', blob, filename || 'speech.webm');
-    form.append('model', 'whisper-1');
-    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${key}` },
-      body: form,
-    });
+    // gpt-4o-mini-transcribe is materially faster than whisper-1 (and
+    // cheaper) — but it's a newer model and not every OpenAI account has
+    // access. Try it first; on a 403/404 fall back to whisper-1, which has
+    // been universally available since the beginning of the audio API.
+    const callTranscribe = async (modelId) => {
+      const blob = new Blob([buf], { type: mime || 'audio/webm' });
+      const form = new FormData();
+      form.append('file', blob, filename || 'speech.webm');
+      form.append('model', modelId);
+      form.append('language', 'en');
+      return fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${key}` },
+        body: form,
+      });
+    };
+    let res = await callTranscribe('gpt-4o-mini-transcribe');
+    if (res.status === 403 || res.status === 404 || res.status === 400) {
+      res = await callTranscribe('whisper-1');
+    }
     if (!res.ok) {
       const txt = await res.text().catch(() => '');
-      return { ok: false, error: `Whisper ${res.status}: ${txt.slice(0, 300)}` };
+      return { ok: false, error: `Transcribe ${res.status}: ${txt.slice(0, 300)}` };
     }
     const json = await res.json();
     return { ok: true, text: (json.text || '').trim() };
@@ -3655,27 +3778,75 @@ ipcMain.handle('chat:transcribe', async (_e, { audioB64, mime, filename }) => {
   }
 });
 
-ipcMain.handle('chat:tts', async (_e, { text, voice = 'alloy', model = 'tts-1', format = 'mp3' }) => {
+ipcMain.handle('chat:tts', async (_e, { text, voice = 'alloy', model = 'gpt-4o-mini-tts', format = 'mp3', instructions } = {}) => {
   if (!requireMaxAi()) return { ok: false, error: 'Tokenly Chat requires the Max + AI subscription.' };
   const keys = loadKeys();
   const key = keys[chatKeyId('openai')];
   if (!key) return { ok: false, error: 'no_openai_key' };
   if (!text) return { ok: false, error: 'no_text' };
   try {
+    // 30s timeout — a hung TTS call would otherwise freeze the voice loop
+    // since the play loop awaits each chunk's promise before moving on.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    // gpt-4o-mini-tts is the newer audio model — significantly more natural
+    // pronunciation than tts-1 (correct unit symbols, decimal numbers,
+    // abbreviations) and ~25x cheaper. The `instructions` field lets us
+    // bias prosody for conversational delivery instead of newscast.
+    const body = { model, voice, input: text.slice(0, 4000), response_format: format };
+    if (instructions && /tts$/.test(model)) body.instructions = instructions;
     const res = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${key}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ model, voice, input: text.slice(0, 4000), response_format: format }),
-    });
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(timer));
     if (!res.ok) {
       const txt = await res.text().catch(() => '');
       return { ok: false, error: `TTS ${res.status}: ${txt.slice(0, 300)}` };
     }
     const ab = await res.arrayBuffer();
     return { ok: true, audioB64: Buffer.from(ab).toString('base64'), mime: format === 'mp3' ? 'audio/mpeg' : 'audio/' + format };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+// --- Voice-plugin helpers ---------------------------------------------------
+// Yahoo Finance's chart endpoint returns current-quote data without auth but
+// expects a real User-Agent (browser fetch from a file:// origin gets blocked
+// or returns CORS errors). Proxy through main so the renderer never has to
+// deal with it.
+ipcMain.handle('voice:fetch-stock', async (_e, symbol) => {
+  if (!symbol || !/^[A-Z]{1,5}(\.[A-Z]{1,3})?$/i.test(String(symbol))) {
+    return { ok: false, error: 'bad_symbol' };
+  }
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Tokenly)' },
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(timer));
+    if (!res.ok) return { ok: false, error: `yahoo_${res.status}` };
+    const j = await res.json();
+    const r = j?.chart?.result?.[0];
+    const meta = r?.meta;
+    if (!meta || meta.regularMarketPrice == null) return { ok: false, error: 'no_quote' };
+    const price = meta.regularMarketPrice;
+    const prev  = meta.chartPreviousClose ?? meta.previousClose ?? price;
+    return {
+      ok: true,
+      symbol: meta.symbol,
+      price,
+      previousClose: prev,
+      changePercent: prev ? ((price - prev) / prev) * 100 : 0,
+      currency: meta.currency,
+    };
   } catch (err) {
     return { ok: false, error: err?.message || String(err) };
   }

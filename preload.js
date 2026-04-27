@@ -50,7 +50,21 @@ contextBridge.exposeInMainWorld('api', {
   chatListModels: () => ipcRenderer.invoke('chat:list-models'),
   chatStream: (opts) => ipcRenderer.invoke('chat:stream', opts),
   chatCancel: (streamId) => ipcRenderer.invoke('chat:cancel', streamId),
-  onChatStreamEvent: (cb) => ipcRenderer.on('chat:stream-event', (_e, payload) => cb(payload)),
+  // Returns an unregister function. Callers that subscribe per-turn (e.g.
+  // VoiceMate's loop) MUST call it when the turn ends, otherwise listeners
+  // accumulate across turns and every delta fires N stale handlers. Callers
+  // that subscribe once for the lifetime of the component (e.g. ChatSheet)
+  // can ignore the returned function.
+  onChatStreamEvent: (cb) => {
+    const wrapped = (_e, payload) => cb(payload);
+    ipcRenderer.on('chat:stream-event', wrapped);
+    return () => ipcRenderer.removeListener('chat:stream-event', wrapped);
+  },
+
+  // Voice-plugin helpers — these go through main.js to avoid renderer CORS
+  // and to keep the Yahoo Finance unofficial endpoint isolated from the
+  // renderer's CSP / referrer constraints.
+  voiceFetchStock: (symbol) => ipcRenderer.invoke('voice:fetch-stock', symbol),
 
   chatListConversations: () => ipcRenderer.invoke('chat:list-conversations'),
   chatLoadConversation: (id) => ipcRenderer.invoke('chat:load-conversation', id),

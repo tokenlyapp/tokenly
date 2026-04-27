@@ -5,9 +5,14 @@
 const { useState: useStateVm, useEffect: useEffectVm, useRef: useRefVm, useCallback: useCallbackVm } = React;
 
 const VAD_RMS_THRESHOLD = 0.018;       // RMS floor that counts as "speech"
-const VAD_MIN_SPEECH_MS = 300;         // Need >= this long of speech before silence-end can fire
-const VAD_SILENCE_END_MS = 2600;       // Trailing silence that ends a turn — generous so natural mid-sentence pauses don't truncate
-const MIN_SEGMENT_MS = 500;            // Drop ultra-short captures (false triggers)
+const VAD_MIN_SPEECH_MS = 220;         // Need >= this long of speech before silence-end can fire
+const VAD_SILENCE_END_MS = 1100;       // Trailing silence that ends a turn — keep tight enough that turn-taking feels conversational, but long enough to ride through natural mid-sentence pauses
+const MIN_SEGMENT_MS = 400;            // Drop ultra-short captures (false triggers)
+
+// Prosody guidance for gpt-4o-mini-tts. Voice replies should sound like a
+// person talking, not a newscast — calm, conversational, with natural
+// pauses on commas/periods and correct unit pronunciation.
+const TTS_VOICE_INSTRUCTIONS = "Speak naturally and conversationally, as if chatting with a friend. Use a calm, friendly tone. Pause briefly at commas and longer at periods. Pronounce numbers, dates, currencies, and unit symbols (Fahrenheit, Celsius, percent, dollars) as you would say them aloud, not as you'd read symbols.";
 const MAX_SEGMENT_MS = 60 * 1000;      // Hard cap so a stuck mic doesn't blow up Whisper
 
 function newVmId() {
@@ -75,6 +80,15 @@ function VoiceMate() {
   const stopRef = useRefVm(false); // user pressed End — short-circuit any in-flight loop step
   const audioElRef = useRefVm(null);
   const streamIdRef = useRefVm(null);
+  // Holds the unregister fn for the current turn's stream listener so the
+  // next turn can forcibly tear it down even if the prior turn never
+  // reached its cleanup line (e.g., errored mid-handler).
+  const prevOffStreamRef = useRefVm(null);
+  // Approximate user location (city/region/country/timezone) discovered
+  // once on mount via IP geolocation. Fed into the system prompt so the
+  // voice AI's web searches default to the right place when the user asks
+  // "what's the weather" or "what's open near me".
+  const userLocationRef = useRefVm(null);
 
   // ------- One-shot: load prefs + memory + greet ---------------------------
   useEffectVm(() => {
@@ -117,6 +131,30 @@ function VoiceMate() {
           try { memoryRef.current = await buildMemoryBlock(convs || []); } catch {}
           try { usageSnapshotRef.current = await window.api.chatUsageSnapshot({ days: 30 }); }
           catch { usageSnapshotRef.current = null; }
+        })();
+        // Approximate location for localized web searches. ipapi.co is free
+        // and doesn't require a key for ~30k requests/day. Falls back to
+        // browser timezone alone if the call fails — even just the TZ helps
+        // narrow the model's guess at "what city/country are you in".
+        (async () => {
+          try {
+            const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 4000);
+            const res = await fetch('https://ipapi.co/json/', { signal: ctrl.signal })
+              .finally(() => clearTimeout(timer));
+            if (res.ok) {
+              const j = await res.json();
+              userLocationRef.current = {
+                city: j.city || '', region: j.region || '', country: j.country_name || j.country || '',
+                timezone: j.timezone || tz,
+              };
+            } else {
+              userLocationRef.current = { timezone: tz };
+            }
+          } catch {
+            try { userLocationRef.current = { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '' }; } catch {}
+          }
         })();
       } catch (err) {
         if (!cancelled) { setPhase('error'); setError(err?.message || String(err)); }
@@ -198,12 +236,15 @@ function VoiceMate() {
   async function speak(text, voiceName) {
     setPhase('speaking');
     try {
-      const res = await window.api.chatTts({ text, voice: voiceName || 'alloy' });
+      const res = await window.api.chatTts({
+        text, voice: voiceName || 'alloy',
+        instructions: TTS_VOICE_INSTRUCTIONS,
+      });
       if (!res.ok) throw new Error(res.error || 'TTS failed');
-      // OpenAI tts-1 bills $0.015 per 1K input characters. Estimate from the
-      // text we just sent (capped at 4096 by main.js to match OpenAI's limit).
+      // gpt-4o-mini-tts bills $0.60 per 1M input characters ($0.0006 / 1K).
+      // Capped at 4096 by main.js to match OpenAI's limit.
       const chars = Math.min(4096, (text || '').length);
-      addCost('tts', (chars / 1000) * 0.015);
+      addCost('tts', (chars / 1000) * 0.0006);
       const bytes = base64ToBytes(res.audioB64);
       const blob = new Blob([bytes], { type: res.mime || 'audio/mpeg' });
       const url = URL.createObjectURL(blob);
@@ -267,9 +308,9 @@ function VoiceMate() {
         if (!stopRef.current) startListening();
         return;
       }
-      // Whisper-1 bills at $0.006/minute of audio (rounded up to the second).
+      // gpt-4o-mini-transcribe bills at $0.003/minute of audio.
       const seconds = elapsed / 1000;
-      addCost('stt', (seconds / 60) * 0.006);
+      addCost('stt', (seconds / 60) * 0.003);
       handleUtterance(blob, mr.mimeType);
     };
     recRef.current = mr;
@@ -320,11 +361,44 @@ function VoiceMate() {
     return '';
   }
 
+  // Strip Whisper's well-known silence hallucinations. Conservative — only
+  // matches very short outputs so real speech is never dropped.
+  function filterWhisperHallucinations(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    const norm = raw.toLowerCase().replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, '');
+    if (!norm) return '';
+    const KNOWN = new Set([
+      'you', 'thank you', 'thanks', 'thanks for watching',
+      'thanks for watching!', 'thank you for watching', 'bye', 'goodbye',
+      'mhm', 'mm', 'uh', 'um', 'hmm', 'yeah', 'ok', 'okay',
+      'subtitles by the amara.org community',
+      'transcription by castingwords',
+      'music', '[music]', '♪', '♪♪',
+    ]);
+    if (KNOWN.has(norm)) return '';
+    if (norm.length <= 3) return '';
+    return raw;
+  }
+
   // ------- Pipeline: STT → LLM → TTS, then loop back to listening ----------
   const handleUtterance = useCallbackVm(async (blob, mime) => {
     if (stopRef.current) return;
     setPhase('thinking');
     setLevel(0);
+
+    // Hard reset of anything left over from prior turns. Without this, a
+    // listener that wasn't unregistered (because the previous turn errored
+    // before reaching offStream) keeps firing on the new turn's deltas,
+    // resurrects its old play loop, and overlapping audio comes out
+    // garbled. Same for half-finished playback on the shared <Audio>.
+    if (prevOffStreamRef.current) {
+      try { prevOffStreamRef.current(); } catch {}
+      prevOffStreamRef.current = null;
+    }
+    if (audioElRef.current) {
+      try { audioElRef.current.pause(); audioElRef.current.src = ''; } catch {}
+    }
 
     // Whisper.
     let userText = '';
@@ -340,6 +414,11 @@ function VoiceMate() {
       if (!stopRef.current) startListening();
       return;
     }
+    // Whisper sometimes emits fluent phantom text on near-silent audio that
+    // happens to clear our VAD ("Thanks for watching", "you", ".", etc.).
+    // Treat known hallucinations as silence and re-listen instead of feeding
+    // them to the LLM as if the user had spoken.
+    userText = filterWhisperHallucinations(userText);
     if (!userText) {
       if (!stopRef.current) startListening();
       return;
@@ -348,11 +427,106 @@ function VoiceMate() {
 
     setMessages((m) => m.concat({ role: 'user', content: userText, timestamp: Date.now() }));
 
+    // ---- Voice plugins: short-circuit web_search for queries we can answer
+    // locally with structured data (weather, crypto, currency, definitions,
+    // wiki, time, air quality, news, translation, math). All plugins run in
+    // parallel; each returns a block to inject into the LLM's system prompt.
+    const pluginsBlock = await runVoicePlugins(userText, { location: userLocationRef.current });
+    let pluginsSystemBlock = pluginsBlock
+      ? `\n\nLIVE PLUGIN DATA (just fetched, use this verbatim — do NOT call web_search; remember the speak-friendly rules above):\n${pluginsBlock}`
+      : '';
+
     // Stream LLM reply.
     const sid = 's_vm_' + newVmId();
     streamIdRef.current = sid;
     let assistantText = '';
     setMessages((m) => m.concat({ role: 'assistant', content: '', timestamp: Date.now(), streaming: true, model, provider }));
+
+    // Sentence-chunked TTS pipeline. Start speaking the first sentence the
+    // moment the LLM finishes it, instead of waiting for the entire reply.
+    // Cuts perceived latency from "full reply length" to ~1 sentence.
+    let spokenCursor = 0;
+    const playQueue = [];
+    let playLoopRunning = false;
+    let allFlushedResolve;
+    const allFlushed = new Promise((r) => { allFlushedResolve = r; });
+    const startPlayLoop = async () => {
+      if (playLoopRunning) return;
+      playLoopRunning = true;
+      while (playQueue.length) {
+        const p = playQueue.shift();
+        let info;
+        try { info = await p; } catch { info = null; }
+        if (stopRef.current) { playLoopRunning = false; allFlushedResolve(); return; }
+        if (!info?.url) continue;
+        const a = audioElRef.current || (audioElRef.current = new Audio());
+        a.src = info.url;
+        await new Promise((r) => {
+          const cleanup = () => { try { URL.revokeObjectURL(info.url); } catch {} a.onended = a.onerror = null; r(); };
+          a.onended = cleanup;
+          a.onerror = cleanup;
+          a.play().catch(cleanup);
+        });
+      }
+      playLoopRunning = false;
+      allFlushedResolve();
+    };
+    const enqueueTTS = (chunkText) => {
+      const text = stripMarkdownForTTS(chunkText).trim();
+      if (!text) return;
+      setPhase('speaking');
+      const p = (async () => {
+        try {
+          const res = await window.api.chatTts({
+            text, voice: voiceRefValue() || 'alloy',
+            instructions: TTS_VOICE_INSTRUCTIONS,
+          });
+          if (!res.ok) return null;
+          const chars = Math.min(4096, text.length);
+          addCost('tts', (chars / 1000) * 0.0006);
+          const bytes = base64ToBytes(res.audioB64);
+          const blob = new Blob([bytes], { type: res.mime || 'audio/mpeg' });
+          return { url: URL.createObjectURL(blob) };
+        } catch { return null; }
+      })();
+      playQueue.push(p);
+      startPlayLoop();
+    };
+    let firstChunkEnqueued = false;
+    const flushCompletedSentences = () => {
+      const tail = assistantText.slice(spokenCursor);
+      const re = /[^.!?\n]+[.!?\n]+(?=\s|$)/g;
+      let m;
+      let lastEnd = 0;
+      const parts = [];
+      while ((m = re.exec(tail)) !== null) {
+        parts.push(m[0].trim());
+        lastEnd = m.index + m[0].length;
+      }
+      if (!parts.length) return;
+      // For the FIRST chunk, send it immediately regardless of size — every
+      // millisecond of "user is waiting" matters more than a slight stutter
+      // if the very first sentence is short. After the first chunk plays,
+      // coalesce short fragments (abbreviations) into ~25-char buffers so
+      // playback isn't choppy mid-response.
+      const MIN_CHUNK = 25;
+      const combined = [];
+      let buf = '';
+      for (const p of parts) {
+        if (!firstChunkEnqueued && !buf) {
+          // Ship the first sentence on its own, no coalescing wait.
+          combined.push(p);
+          firstChunkEnqueued = true;
+          continue;
+        }
+        buf = buf ? buf + ' ' + p : p;
+        if (buf.length >= MIN_CHUNK) { combined.push(buf); buf = ''; }
+      }
+      if (buf) combined.push(buf);
+      for (const s of combined) enqueueTTS(s);
+      spokenCursor += lastEnd;
+      while (spokenCursor < assistantText.length && /\s/.test(assistantText[spokenCursor])) spokenCursor++;
+    };
 
     const outgoing = messagesRef.current
       .filter((mm) => mm.role === 'user' || mm.role === 'assistant')
@@ -370,8 +544,10 @@ function VoiceMate() {
 
     // Subscribe per call. ipcRenderer.on doesn't dedupe, so we rely on a
     // streamId match to filter out events that aren't ours.
+    let firstEventLogged = false;
     const handler = (evt) => {
       if (!evt || evt.streamId !== streamIdRef.current) return;
+      if (!firstEventLogged) { console.warn('[voicemate] first stream event received:', evt.type); firstEventLogged = true; }
       if (evt.type === 'delta') {
         assistantText += evt.text || '';
         setMessages((m) => {
@@ -382,7 +558,11 @@ function VoiceMate() {
           }
           return arr;
         });
+        // Kick off TTS for any sentence that just completed — first audio
+        // can start before the LLM has finished streaming.
+        flushCompletedSentences();
       } else if (evt.type === 'done' || evt.type === 'aborted') {
+        if (evt.text) assistantText = evt.text;
         setMessages((m) => {
           const arr = m.slice();
           const last = arr[arr.length - 1];
@@ -391,6 +571,14 @@ function VoiceMate() {
           }
           return arr;
         });
+        // Flush any trailing partial sentence that didn't end in punctuation.
+        flushCompletedSentences();
+        if (spokenCursor < assistantText.length) {
+          const trailing = assistantText.slice(spokenCursor).trim();
+          if (trailing) { enqueueTTS(trailing); spokenCursor = assistantText.length; }
+        }
+        // No more chunks coming — if the play loop already drained, signal done.
+        if (!playQueue.length && !playLoopRunning) allFlushedResolve();
         // LLM cost arrives in the stream done event (already includes the
         // cached-input multiplier). Direct billing — main.js doesn't proxy.
         if (evt.cost) addCost('llm', evt.cost);
@@ -404,19 +592,51 @@ function VoiceMate() {
           }
           return arr;
         });
+        if (!playQueue.length && !playLoopRunning) allFlushedResolve();
         resolveStream();
       }
     };
-    if (window.api?.onChatStreamEvent) window.api.onChatStreamEvent(handler);
+    // Subscribe per-turn and capture the unregister so we don't leak a
+    // listener every loop. Without this, after a few turns the renderer is
+    // running multiple stale handlers on the same delta event — the chunked
+    // TTS pipeline gets duplicate sentences and the conversation effectively
+    // freezes after Node hits the 10-listener warning threshold.
+    let offStream = () => {};
+    if (window.api?.onChatStreamEvent) {
+      const ret = window.api.onChatStreamEvent(handler);
+      if (typeof ret === 'function') offStream = ret;
+    }
+    // Stash on a ref so the NEXT turn's hard reset can tear this listener
+    // down even if our own cleanup at end-of-turn never runs (e.g., an
+    // exception bubbles before reaching `offStream()`).
+    prevOffStreamRef.current = offStream;
 
     // Make sure the deferred initial memory/usage build has finished before
-    // we compose the system prompt for the first turn.
+    // we compose the system prompt for the first turn. The initial build
+    // already populated usageSnapshotRef once.
     try { await memoryReadyRef.current; } catch {}
-    // Refresh the usage snapshot so longer voice sessions pick up data
-    // refreshes (the Tokenly main view polls every 60s; we piggyback).
-    try { usageSnapshotRef.current = await window.api.chatUsageSnapshot({ days: 30 }); } catch {}
+    // Refresh the usage snapshot in the BACKGROUND so the next turn sees
+    // fresher numbers. Awaiting it here used to hang voice forever if any
+    // upstream usage API was slow/down — the snapshot loops through every
+    // provider serially.
+    window.api.chatUsageSnapshot({ days: 30 })
+      .then((snap) => { if (snap) usageSnapshotRef.current = snap; })
+      .catch(() => {});
 
-    const baseSystem = 'You are a friendly voice assistant for Tokenly, a Mac AI-spend monitor. Keep responses concise (1-3 sentences) and conversational, since the user will hear you spoken aloud rather than read you.';
+    const nowISO = new Date().toISOString();
+    const nowReadable = new Date().toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const baseSystem = `You are a friendly voice assistant for Tokenly, a Mac AI-spend monitor. Keep responses concise (1-3 sentences) and conversational, since the user will hear you spoken aloud rather than read you.
+
+CURRENT DATE/TIME: ${nowReadable} (${nowISO}). Use this when the user asks about "today", "this week", "right now", schedules, etc. Don't fall back to your training-data sense of "now".
+
+You have a web_search tool available. USE IT — don't just answer from training data — whenever the user asks about anything that may have changed since your training cutoff: current events, news, weather, scores, stock or crypto prices, product releases, version numbers, schedules, "today's" / "latest" / "right now" anything. If the user asks "what's happening in the world today" or "what's the price of X," that requires a search. After searching, summarize the answer in one or two spoken sentences (don't list URLs aloud — the citations are surfaced separately).
+
+SPEAK-FRIENDLY OUTPUT — every word you write will be read aloud by text-to-speech, so:
+  - Spell out unit symbols: write "75 degrees Fahrenheit" not "75°F" or "75 F"; "20 degrees Celsius" not "20°C"; "60 percent" not "60%"; "5 dollars" not "$5".
+  - Spell out abbreviations the user wouldn't say aloud: "Atlanta, Georgia" not "Atlanta, GA"; "United States" not "U.S."; "Doctor" not "Dr." (when it's a title).
+  - Write dates the way a person would say them: "April twenty-seventh" or "Sunday, April twenty-seventh", not "4/27" or "2026-04-27".
+  - Write times in spoken form: "three thirty in the afternoon" or "three thirty PM", not "15:30" or "3:30PM" without the space.
+  - No bullet points, no markdown, no headings, no asterisks. One flowing spoken paragraph.`;
     const memory = memoryRef.current;
     const usage = usageSnapshotRef.current;
     let system = baseSystem;
@@ -429,24 +649,59 @@ function VoiceMate() {
     if (memory) {
       system += `\n\nPAST CONVERSATIONS — what the user has been working on across past Tokenly conversations:\n${memory}\n\nIf the user references something earlier or from past conversations, use this context. Do not bring it up unprompted.`;
     }
+    // Location hint — without this the web_search tool returns generic
+    // results and the model guesses (badly) when the user asks "weather
+    // here" / "near me" / etc.
+    const loc = userLocationRef.current;
+    if (loc && (loc.city || loc.country || loc.timezone)) {
+      const parts = [loc.city, loc.region, loc.country].filter(Boolean).join(', ');
+      system += `\n\nUSER LOCATION (approximate, from IP geolocation${loc.timezone ? `, timezone ${loc.timezone}` : ''}): ${parts || loc.timezone}.\n\nWhen the user asks about anything location-dependent — weather, time, what's open, traffic, sports scores, "near me", "here", "today" — use THIS location in your web_search query (e.g., search "weather ${loc.city || parts}" not just "weather"). Don't ask the user where they are; you already know.`;
+    }
+    // Live weather data, if the turn was a weather query — populated above.
+    if (pluginsSystemBlock) system += pluginsSystemBlock;
 
+    console.warn('[voicemate] starting stream', sid, 'provider=' + provider, 'model=' + model);
     try {
       await window.api.chatStream({
         streamId: sid,
         provider, model,
         messages: outgoing,
         system,
+        // Voice answers benefit from fresh info (news, prices, etc.) the same
+        // way chat does. Same default-on behavior as ChatSheet.
+        webSearch: true,
       });
     } catch (err) {
       console.warn('[voicemate] stream invoke failed:', err);
     }
-    await streamDone;
+    console.warn('[voicemate] awaiting streamDone');
+    // 45s safety net: if the LLM stream is hung (web_search_preview can sit
+    // silent for 10-20s while searching, but anything past 45s is broken),
+    // abort it so the user isn't stuck on 'thinking' forever and we can
+    // re-listen.
+    const streamTimeout = new Promise((r) => setTimeout(() => {
+      console.warn('[voicemate] stream timed out after 45s, cancelling');
+      try { window.api.chatCancel && window.api.chatCancel(sid); } catch {}
+      r();
+    }, 45000));
+    await Promise.race([streamDone, streamTimeout]);
+    console.warn('[voicemate] streamDone resolved, queueLen=' + playQueue.length, 'playLoopRunning=' + playLoopRunning);
+    // Detach the per-turn stream listener now that the LLM is done.
+    try { offStream(); } catch {}
+    if (prevOffStreamRef.current === offStream) prevOffStreamRef.current = null;
     if (stopRef.current) return;
 
-    // Speak the reply.
-    if (assistantText.trim()) {
-      await speak(stripMarkdownForTTS(assistantText), voiceRefValue());
-    }
+    // Wait for the sentence-chunked TTS pipeline to finish playing — the
+    // first sentence has typically been speaking since mid-stream, so this
+    // resolves much sooner than the old "TTS the full reply at the end".
+    // Cap the wait at 60s so a hung TTS call doesn't permanently freeze the
+    // conversation in 'speaking' phase — the user would rather we re-listen
+    // than wait forever.
+    await Promise.race([
+      allFlushed,
+      new Promise((r) => setTimeout(() => { console.warn('[voicemate] allFlushed timed out'); r(); }, 60000)),
+    ]);
+    console.warn('[voicemate] allFlushed resolved, looping back to listen');
     if (stopRef.current) return;
 
     // Loop.
@@ -846,15 +1101,512 @@ function base64ToBytes(b64) {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
+// ============================================================================
+// Voice plugins
+// ============================================================================
+// Each plugin detects intent in the user's transcript and returns either:
+//   - a string block to append to the LLM's system prompt (with structured
+//     real-time data + an instruction to answer from it instead of web_search),
+//   - or null/empty if it doesn't apply.
+//
+// The voice loop iterates VOICE_PLUGINS, fans out matched plugins in parallel,
+// and concatenates the resulting blocks into the system prompt for that turn.
+// All plugins use free APIs (no key) where possible; key-gated ones (Finnhub,
+// NewsAPI, DeepL) check for the key and silently no-op if missing so the
+// model falls back to web_search.
+
+// ----- 1. Weather (Open-Meteo) ----------------------------------------------
+function detectWeatherQuery(text) {
+  if (!text) return null;
+  const intent = /\b(weather|forecast|temperature|temp|how (?:warm|hot|cold)|raining|snowing|rainy|snowy|sunny|cloudy|humid|windy|precipitation)\b/i;
+  if (!intent.test(text)) return null;
+  const m = text.match(/\b(?:in|at|for|near|around)\s+((?:[A-Z][\w'-]*[,\s]*)+?)(?=\s*(?:\?|\.|tonight|today|tomorrow|now|right now|this (?:week|weekend|morning|afternoon|evening)|$))/i);
+  if (m) return m[1].replace(/[\s,]+$/, '').trim();
+  return '';
+}
+function weatherCodeToText(code) {
+  if (code == null) return 'unknown conditions';
+  if (code === 0) return 'clear skies';
+  if (code === 1) return 'mainly clear';
+  if (code === 2) return 'partly cloudy';
+  if (code === 3) return 'overcast';
+  if (code === 45 || code === 48) return 'foggy';
+  if (code >= 51 && code <= 57) return 'drizzling';
+  if (code >= 61 && code <= 67) return 'raining';
+  if (code >= 71 && code <= 77) return 'snowing';
+  if (code >= 80 && code <= 82) return 'rain showers';
+  if (code >= 85 && code <= 86) return 'snow showers';
+  if (code >= 95 && code <= 99) return 'thunderstorms';
+  return 'mixed conditions';
+}
+async function geocodePlace(place) {
+  const ge = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(place)}&count=1&language=en&format=json`);
+  if (!ge.ok) return null;
+  const gj = await ge.json();
+  return (gj.results && gj.results[0]) || null;
+}
+const weatherPlugin = {
+  name: 'weather',
+  async run(text, ctx) {
+    const hint = detectWeatherQuery(text);
+    if (hint === null) return '';
+    const place = (hint && hint.trim())
+      || (ctx.location ? [ctx.location.city, ctx.location.region, ctx.location.country].filter(Boolean).join(', ') : '');
+    if (!place) return '';
+    const r = await geocodePlace(place);
+    if (!r) return '';
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${r.latitude}&longitude=${r.longitude}`
+      + `&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m`
+      + `&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max`
+      + `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto&forecast_days=1`;
+    const wx = await fetch(url);
+    if (!wx.ok) return '';
+    const j = await wx.json();
+    const loc = [r.name, r.admin1, r.country].filter(Boolean).join(', ');
+    return `LIVE WEATHER (Open-Meteo, ${loc}): currently ${Math.round(j.current?.temperature_2m)} degrees Fahrenheit (feels like ${Math.round(j.current?.apparent_temperature)}), ${weatherCodeToText(j.current?.weather_code)}, humidity ${Math.round(j.current?.relative_humidity_2m)} percent, wind ${Math.round(j.current?.wind_speed_10m)} miles per hour. Today's high ${Math.round(j.daily?.temperature_2m_max?.[0])}, low ${Math.round(j.daily?.temperature_2m_min?.[0])}. Precip chance ${j.daily?.precipitation_probability_max?.[0]} percent.`;
+  },
+};
+
+// ----- 2. Calculator / unit conversion (local, no API) ----------------------
+// Detects "what is X plus/times/etc Y", "convert N units to other-units",
+// "how many X in Y units". Evaluates locally — no LLM round-trip needed.
+const UNITS = {
+  // length
+  m: 1, meter: 1, meters: 1, metre: 1, metres: 1,
+  km: 1000, kilometer: 1000, kilometers: 1000,
+  cm: 0.01, mm: 0.001,
+  mi: 1609.344, mile: 1609.344, miles: 1609.344,
+  ft: 0.3048, foot: 0.3048, feet: 0.3048,
+  in: 0.0254, inch: 0.0254, inches: 0.0254,
+  yd: 0.9144, yard: 0.9144, yards: 0.9144,
+};
+const WEIGHT = {
+  g: 1, gram: 1, grams: 1,
+  kg: 1000, kilogram: 1000, kilograms: 1000,
+  mg: 0.001,
+  oz: 28.3495, ounce: 28.3495, ounces: 28.3495,
+  lb: 453.592, lbs: 453.592, pound: 453.592, pounds: 453.592,
+  ton: 907184.74, tons: 907184.74,
+};
+const VOLUME = {
+  ml: 1, l: 1000, liter: 1000, liters: 1000, litre: 1000, litres: 1000,
+  tsp: 4.92892, tsps: 4.92892, teaspoon: 4.92892, teaspoons: 4.92892,
+  tbsp: 14.7868, tbsps: 14.7868, tablespoon: 14.7868, tablespoons: 14.7868,
+  cup: 236.588, cups: 236.588,
+  pint: 473.176, pints: 473.176, pt: 473.176,
+  quart: 946.353, quarts: 946.353, qt: 946.353,
+  gal: 3785.41, gallon: 3785.41, gallons: 3785.41,
+  'fl oz': 29.5735, 'fluid ounce': 29.5735, 'fluid ounces': 29.5735,
+};
+function unitFamily(u) {
+  u = u.toLowerCase();
+  if (UNITS[u]) return ['length', UNITS[u]];
+  if (WEIGHT[u]) return ['weight', WEIGHT[u]];
+  if (VOLUME[u]) return ['volume', VOLUME[u]];
+  return [null, 0];
+}
+function tempConvert(val, from, to) {
+  const F = ['f', 'fahrenheit', 'degrees f', 'degrees fahrenheit'];
+  const C = ['c', 'celsius', 'degrees c', 'degrees celsius'];
+  const K = ['k', 'kelvin'];
+  const norm = (u) => u.toLowerCase().trim();
+  const fromF = F.includes(norm(from)), fromC = C.includes(norm(from)), fromK = K.includes(norm(from));
+  const toF = F.includes(norm(to)), toC = C.includes(norm(to)), toK = K.includes(norm(to));
+  if (!(fromF || fromC || fromK) || !(toF || toC || toK)) return null;
+  let c;
+  if (fromF) c = (val - 32) * 5 / 9;
+  else if (fromK) c = val - 273.15;
+  else c = val;
+  if (toF) return c * 9 / 5 + 32;
+  if (toK) return c + 273.15;
+  return c;
+}
+const calcPlugin = {
+  name: 'calc',
+  async run(text) {
+    // Pattern A: "convert N <unit> to <unit>" / "N <unit> in <unit>" / "how many <unit> in N <unit>"
+    let m = text.match(/(?:convert\s+)?([\d.]+)\s*([a-z][a-z\s]*?)\s+(?:to|in|into)\s+([a-z][a-z\s]+?)(?:\?|\.|$)/i);
+    let val, fromU, toU;
+    if (m) { val = parseFloat(m[1]); fromU = m[2].trim(); toU = m[3].trim(); }
+    else {
+      const m2 = text.match(/how many\s+([a-z][a-z\s]+?)\s+(?:in|are in|equal)\s+([\d.]+)\s*([a-z][a-z\s]+?)(?:\?|\.|$)/i);
+      if (m2) { toU = m2[1].trim(); val = parseFloat(m2[2]); fromU = m2[3].trim(); }
+    }
+    if (val != null && fromU && toU) {
+      // Temperature first.
+      const t = tempConvert(val, fromU, toU);
+      if (t != null) return `CONVERSION: ${val} ${fromU} = ${Math.round(t * 100) / 100} ${toU}.`;
+      const [fFam, fMul] = unitFamily(fromU);
+      const [tFam, tMul] = unitFamily(toU);
+      if (fFam && fFam === tFam) {
+        const result = (val * fMul) / tMul;
+        return `CONVERSION: ${val} ${fromU} = ${Math.round(result * 1000) / 1000} ${toU}.`;
+      }
+    }
+    // Pattern B: arithmetic — "what is N op M (op P)?" with simple operators.
+    const arith = text.match(/what(?:'s| is)\s+([\d.\s+\-*x×÷/()]+?)(?:\?|\.|$)/i);
+    if (arith) {
+      const expr = arith[1].replace(/x|×/gi, '*').replace(/÷/g, '/').trim();
+      // Whitelist before eval.
+      if (/^[\d\s+\-*/().]+$/.test(expr)) {
+        try {
+          // eslint-disable-next-line no-new-func
+          const result = Function(`"use strict"; return (${expr});`)();
+          if (Number.isFinite(result)) {
+            return `CALCULATION: ${expr} = ${Math.round(result * 1000000) / 1000000}.`;
+          }
+        } catch {}
+      }
+    }
+    return '';
+  },
+};
+
+// ----- 3. Currency conversion (exchangerate.host, free no key) --------------
+const CURRENCY_NAMES = {
+  usd: 'US dollars', eur: 'euros', gbp: 'British pounds', jpy: 'Japanese yen',
+  cad: 'Canadian dollars', aud: 'Australian dollars', chf: 'Swiss francs',
+  cny: 'Chinese yuan', inr: 'Indian rupees', mxn: 'Mexican pesos',
+  brl: 'Brazilian reals', krw: 'Korean won', sgd: 'Singapore dollars',
+};
+function normalizeCurrency(token) {
+  const t = token.toLowerCase().trim().replace(/[.,]/g, '');
+  const aliases = {
+    'dollars': 'usd', 'dollar': 'usd', 'usd': 'usd', 'bucks': 'usd',
+    'euros': 'eur', 'euro': 'eur', 'eur': 'eur',
+    'pounds': 'gbp', 'pound': 'gbp', 'sterling': 'gbp', 'gbp': 'gbp',
+    'yen': 'jpy', 'jpy': 'jpy',
+    'canadian dollars': 'cad', 'cad': 'cad',
+    'australian dollars': 'aud', 'aud': 'aud',
+    'swiss francs': 'chf', 'francs': 'chf', 'chf': 'chf',
+    'yuan': 'cny', 'rmb': 'cny', 'cny': 'cny',
+    'rupees': 'inr', 'inr': 'inr',
+    'pesos': 'mxn', 'mxn': 'mxn',
+    'reals': 'brl', 'brl': 'brl',
+    'won': 'krw', 'krw': 'krw',
+  };
+  return aliases[t] || (t.length === 3 ? t : null);
+}
+const currencyPlugin = {
+  name: 'currency',
+  async run(text) {
+    const m = text.match(/(?:convert\s+)?([\d.]+)\s*([a-z][a-z\s]*?)\s+(?:to|in|into)\s+([a-z][a-z\s]+?)(?:\?|\.|$)/i);
+    if (!m) return '';
+    const amt = parseFloat(m[1]);
+    const from = normalizeCurrency(m[2]);
+    const to = normalizeCurrency(m[3]);
+    if (!from || !to || from === to) return '';
+    try {
+      const res = await fetch(`https://api.exchangerate.host/convert?from=${from}&to=${to}&amount=${amt}`);
+      if (!res.ok) return '';
+      const j = await res.json();
+      if (j?.result == null) return '';
+      const fromName = CURRENCY_NAMES[from] || from.toUpperCase();
+      const toName = CURRENCY_NAMES[to] || to.toUpperCase();
+      return `CURRENCY CONVERSION: ${amt} ${fromName} equals ${Math.round(j.result * 100) / 100} ${toName} (rate ${j.info?.rate}).`;
+    } catch { return ''; }
+  },
+};
+
+// ----- 4. Word definitions (dictionaryapi.dev, free no key) -----------------
+const definePlugin = {
+  name: 'define',
+  async run(text) {
+    const m = text.match(/\b(?:define|definition of|what does|meaning of|what's the meaning of)\s+(?:the word\s+)?([a-z][a-z'-]+?)(?:\s+mean)?(?:\?|\.|$)/i);
+    if (!m) return '';
+    const word = m[1].trim();
+    if (word.length < 2 || word.length > 32) return '';
+    try {
+      const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
+      if (!res.ok) return '';
+      const j = await res.json();
+      const entry = Array.isArray(j) ? j[0] : null;
+      if (!entry?.meanings?.length) return '';
+      const m1 = entry.meanings[0];
+      const def = m1?.definitions?.[0]?.definition;
+      if (!def) return '';
+      return `DEFINITION (dictionaryapi.dev) — ${word} (${m1.partOfSpeech || 'noun'}): ${def}`;
+    } catch { return ''; }
+  },
+};
+
+// ----- 5. Wikipedia summary (free no key) -----------------------------------
+const wikiPlugin = {
+  name: 'wiki',
+  async run(text) {
+    // Triggers: "tell me about X", "who is X", "what is X" (when not weather/etc),
+    // "explain X". Conservative — short queries only, otherwise too noisy.
+    const m = text.match(/\b(?:tell me about|who (?:is|was)|what (?:is|was|are)|explain)\s+([A-Z][\w\s.'-]+?)(?:\?|\.|$)/i);
+    if (!m) return '';
+    let title = m[1].trim().replace(/\s+/g, '_');
+    if (title.length < 2 || title.length > 80) return '';
+    try {
+      const res = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}?redirect=true`);
+      if (!res.ok) return '';
+      const j = await res.json();
+      if (j.type === 'disambiguation' || !j.extract) return '';
+      const ext = String(j.extract).slice(0, 600);
+      return `WIKIPEDIA SUMMARY — ${j.title}: ${ext}`;
+    } catch { return ''; }
+  },
+};
+
+// ----- 6. Time / date / timezone (local, no API) ----------------------------
+const TZ_ALIASES = {
+  'tokyo': 'Asia/Tokyo', 'london': 'Europe/London', 'paris': 'Europe/Paris',
+  'new york': 'America/New_York', 'nyc': 'America/New_York',
+  'la': 'America/Los_Angeles', 'los angeles': 'America/Los_Angeles',
+  'sf': 'America/Los_Angeles', 'san francisco': 'America/Los_Angeles',
+  'sydney': 'Australia/Sydney', 'singapore': 'Asia/Singapore',
+  'dubai': 'Asia/Dubai', 'mumbai': 'Asia/Kolkata', 'delhi': 'Asia/Kolkata',
+  'beijing': 'Asia/Shanghai', 'shanghai': 'Asia/Shanghai',
+  'berlin': 'Europe/Berlin', 'madrid': 'Europe/Madrid', 'rome': 'Europe/Rome',
+  'chicago': 'America/Chicago', 'denver': 'America/Denver',
+  'toronto': 'America/Toronto', 'mexico city': 'America/Mexico_City',
+};
+const timePlugin = {
+  name: 'time',
+  async run(text, ctx) {
+    // "what time is it [in <place>]" / "what's the time [in <place>]"
+    const m = text.match(/\bwhat(?:'s| is)\s+(?:the\s+)?time(?:\s+(?:in|at)\s+([a-z][a-z\s]+?))?(?:\?|\.|$)/i);
+    if (m) {
+      const place = (m[1] || '').trim().toLowerCase();
+      const tz = TZ_ALIASES[place] || (ctx.location?.timezone) || 'UTC';
+      try {
+        const now = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true, weekday: 'long' }).format(new Date());
+        const placeName = place || (ctx.location?.city ? `${ctx.location.city}` : 'your location');
+        return `LOCAL TIME (${tz}, ${placeName}): ${now}.`;
+      } catch { return ''; }
+    }
+    // "what day is it" / "what's today's date"
+    if (/\b(what (?:day|date) is (?:it|today)|what'?s? (?:today|today's date|the date))\b/i.test(text)) {
+      const tz = ctx.location?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const today = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(new Date());
+      return `TODAY: ${today}.`;
+    }
+    return '';
+  },
+};
+
+// ----- 7. Air quality (Open-Meteo air-quality, free no key) -----------------
+function aqiCategory(aqi) {
+  if (aqi == null) return 'unknown';
+  if (aqi <= 50) return 'good';
+  if (aqi <= 100) return 'moderate';
+  if (aqi <= 150) return 'unhealthy for sensitive groups';
+  if (aqi <= 200) return 'unhealthy';
+  if (aqi <= 300) return 'very unhealthy';
+  return 'hazardous';
+}
+const airQualityPlugin = {
+  name: 'air',
+  async run(text, ctx) {
+    if (!/\b(air quality|air pollution|aqi|smog|how (?:bad|good) is the air)\b/i.test(text)) return '';
+    const m = text.match(/\b(?:in|at|for|near|around)\s+((?:[A-Z][\w'-]*[,\s]*)+?)(?=\s*(?:\?|\.|right now|today|now|$))/i);
+    const place = (m && m[1].trim()) || (ctx.location ? [ctx.location.city, ctx.location.region, ctx.location.country].filter(Boolean).join(', ') : '');
+    if (!place) return '';
+    const r = await geocodePlace(place);
+    if (!r) return '';
+    try {
+      const res = await fetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${r.latitude}&longitude=${r.longitude}&current=us_aqi,pm2_5,pm10,ozone&timezone=auto`);
+      if (!res.ok) return '';
+      const j = await res.json();
+      const a = j.current || {};
+      const loc = [r.name, r.admin1, r.country].filter(Boolean).join(', ');
+      return `LIVE AIR QUALITY (Open-Meteo, ${loc}): US AQI ${Math.round(a.us_aqi)} (${aqiCategory(a.us_aqi)}), PM2.5 ${Math.round(a.pm2_5)} micrograms per cubic meter, PM10 ${Math.round(a.pm10)}, ozone ${Math.round(a.ozone)}.`;
+    } catch { return ''; }
+  },
+};
+
+// ----- 8. Crypto prices (CoinGecko, free no key) ----------------------------
+const CRYPTO_ALIASES = {
+  bitcoin: 'bitcoin', btc: 'bitcoin',
+  ethereum: 'ethereum', eth: 'ethereum',
+  solana: 'solana', sol: 'solana',
+  cardano: 'cardano', ada: 'cardano',
+  dogecoin: 'dogecoin', doge: 'dogecoin',
+  ripple: 'ripple', xrp: 'ripple',
+  polkadot: 'polkadot', dot: 'polkadot',
+  litecoin: 'litecoin', ltc: 'litecoin',
+  chainlink: 'chainlink', link: 'chainlink',
+  polygon: 'matic-network', matic: 'matic-network',
+  avalanche: 'avalanche-2', avax: 'avalanche-2',
+};
+const cryptoPlugin = {
+  name: 'crypto',
+  async run(text) {
+    if (!/\b(price|worth|value|cost)\b/i.test(text)) return '';
+    let coin = null;
+    for (const k of Object.keys(CRYPTO_ALIASES)) {
+      if (new RegExp(`\\b${k}\\b`, 'i').test(text)) { coin = CRYPTO_ALIASES[k]; break; }
+    }
+    if (!coin) return '';
+    try {
+      const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${coin}&vs_currencies=usd&include_24hr_change=true`);
+      if (!res.ok) return '';
+      const j = await res.json();
+      const d = j[coin];
+      if (!d?.usd) return '';
+      const chg = d.usd_24h_change;
+      return `LIVE CRYPTO PRICE (CoinGecko) — ${coin.replace(/-/g, ' ')}: ${d.usd.toLocaleString('en-US', { maximumFractionDigits: 2 })} US dollars (${chg >= 0 ? 'up' : 'down'} ${Math.abs(chg).toFixed(2)} percent in the last 24 hours).`;
+    } catch { return ''; }
+  },
+};
+
+// ----- 9. Stock prices (Yahoo Finance, free no key) -------------------------
+// Yahoo's chart endpoint is unofficial-but-stable and returns a current
+// quote without auth. We hit it via main.js (voice:fetch-stock) so the
+// renderer doesn't run into Yahoo's CORS preflight.
+const stockPlugin = {
+  name: 'stock',
+  async run(text) {
+    if (!/\b(stock|share|ticker)\b/i.test(text) && !/\bprice of\b/i.test(text)) return '';
+    const m = text.match(/\b(?:price of|stock price of|stock for|ticker)\s+([A-Z]{1,5})\b/i)
+      || text.match(/\b([A-Z]{1,5})\s+(?:stock|share)(?:\s+price)?\b/);
+    if (!m) return '';
+    const symbol = m[1].toUpperCase();
+    try {
+      const res = await window.api.voiceFetchStock?.(symbol);
+      if (!res?.ok) return '';
+      const chg = res.changePercent;
+      return `LIVE STOCK PRICE (Yahoo Finance) — ${symbol}: ${res.price.toFixed(2)} ${res.currency || 'US dollars'} (${chg >= 0 ? 'up' : 'down'} ${Math.abs(chg).toFixed(2)} percent today, previous close ${res.previousClose.toFixed(2)}).`;
+    } catch { return ''; }
+  },
+};
+
+// ----- 10. Tech news (Hacker News, free no key) -----------------------------
+// Routes to the right HN endpoint based on intent (Show HN, Ask HN, Best,
+// New, or default Top). Asks the model to recite the items rather than
+// summarize them — otherwise the "1-3 sentences" voice rule causes the LLM
+// to condense five headlines into "the top stories include..." instead of
+// actually reading them.
+const newsPlugin = {
+  name: 'news',
+  async run(text) {
+    // Match HN both as "HN" and as Whisper's likely transcriptions
+    // ("H N", "H.N.", "Hacker News").
+    // Allow plural ("Show HNs") and the "h n" / "h.n." Whisper transcriptions.
+    const HN = `(?:hns?|h\\s*\\.?\\s*n\\.?|hacker\\s*news)`;
+    const reIntent = new RegExp(`\\b(news|headlines|${HN}|top stories|show ${HN}|ask ${HN}|best (?:of )?${HN}|what's happening)\\b`, 'i');
+    if (!reIntent.test(text)) return '';
+    // Pick endpoint by intent.
+    let endpoint = 'topstories', label = 'top stories';
+    if (new RegExp(`\\bshow\\s*${HN}\\b`, 'i').test(text)) { endpoint = 'showstories'; label = 'Show HN posts'; }
+    else if (new RegExp(`\\bask\\s*${HN}\\b`, 'i').test(text)) { endpoint = 'askstories'; label = 'Ask HN posts'; }
+    else if (new RegExp(`\\bbest(?:\\s+(?:of\\s+)?${HN}|\\s+stories)\\b`, 'i').test(text)) { endpoint = 'beststories'; label = 'best stories'; }
+    else if (new RegExp(`\\bnew\\s+(?:${HN}|stories)\\b`, 'i').test(text)) { endpoint = 'newstories'; label = 'newest stories'; }
+    // How many to fetch — match user's number if they specified one.
+    const numMatch = text.match(/\b(?:top\s+)?(\d{1,2})\b/);
+    const count = Math.max(3, Math.min(10, numMatch ? parseInt(numMatch[1], 10) : 5));
+    try {
+      const ids = await fetch(`https://hacker-news.firebaseio.com/v0/${endpoint}.json`).then((r) => r.ok ? r.json() : []);
+      if (!ids?.length) return '';
+      const top = ids.slice(0, count);
+      const items = await Promise.all(top.map((id) =>
+        fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`).then((r) => r.ok ? r.json() : null)
+      ));
+      const valid = items.filter(Boolean);
+      if (!valid.length) return '';
+      const lines = valid.map((it, i) => `${i + 1}. ${it.title} (${it.score || 0} points, ${it.descendants || 0} comments)`);
+      return `LIVE HACKER NEWS — current ${label} (top ${valid.length}):\n${lines.join('\n')}\n\nIMPORTANT: The user asked for a list. RECITE these items in order — say each one's number and title (skip the score/comment counts unless asked). Do NOT compress them into a summary like "the top stories include..."; the user wants to hear the actual headlines. Brief intro is fine ("Here are the top five Show HN posts right now:") followed by the numbered list.`;
+    } catch { return ''; }
+  },
+};
+
+// ----- 11. Translation (LibreTranslate public, free no key) -----------------
+const TRANSLATE_LANGS = {
+  english: 'en', spanish: 'es', french: 'fr', german: 'de', italian: 'it',
+  portuguese: 'pt', dutch: 'nl', russian: 'ru', polish: 'pl', turkish: 'tr',
+  arabic: 'ar', hebrew: 'he', hindi: 'hi',
+  chinese: 'zh', japanese: 'ja', korean: 'ko', vietnamese: 'vi',
+};
+const translatePlugin = {
+  name: 'translate',
+  async run(text) {
+    // "translate <phrase> to <lang>" / "how do you say <phrase> in <lang>"
+    let m = text.match(/translate\s+(?:the (?:word|phrase|sentence)\s+)?(?:["'](.+?)["']|(.+?))\s+(?:to|into|in)\s+([a-z]+)(?:\?|\.|$)/i);
+    let phrase, lang;
+    if (m) { phrase = (m[1] || m[2] || '').trim(); lang = m[3].toLowerCase(); }
+    else {
+      const m2 = text.match(/how do (?:you|i) say\s+(?:["'](.+?)["']|(.+?))\s+in\s+([a-z]+)(?:\?|\.|$)/i);
+      if (m2) { phrase = (m2[1] || m2[2] || '').trim(); lang = m2[3].toLowerCase(); }
+    }
+    if (!phrase || !lang) return '';
+    const target = TRANSLATE_LANGS[lang] || (lang.length === 2 ? lang : null);
+    if (!target) return '';
+    try {
+      const res = await fetch('https://libretranslate.de/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ q: phrase, source: 'auto', target, format: 'text' }),
+      });
+      if (!res.ok) return '';
+      const j = await res.json();
+      if (!j?.translatedText) return '';
+      return `TRANSLATION (LibreTranslate) — "${phrase}" in ${lang}: "${j.translatedText}"`;
+    } catch { return ''; }
+  },
+};
+
+const VOICE_PLUGINS = [
+  weatherPlugin, calcPlugin, currencyPlugin, definePlugin, wikiPlugin,
+  timePlugin, airQualityPlugin, cryptoPlugin, stockPlugin, newsPlugin,
+  translatePlugin,
+];
+
+// Run every plugin in parallel; collect non-empty blocks. Each plugin must be
+// fast (<2s) and robust to bad input — failures are swallowed so a broken
+// plugin can never block the voice loop.
+async function runVoicePlugins(text, ctx) {
+  const results = await Promise.all(VOICE_PLUGINS.map(async (p) => {
+    try {
+      const block = await p.run(text, ctx);
+      if (block) console.warn('[voicemate] plugin', p.name, 'matched');
+      return block || '';
+    } catch (err) {
+      console.warn('[voicemate] plugin', p.name, 'error:', err);
+      return '';
+    }
+  }));
+  return results.filter(Boolean).join('\n\n');
+}
+
 function stripMarkdownForTTS(s) {
   if (!s) return '';
   return String(s)
-    .replace(/```[\s\S]*?```/g, ' (code block omitted) ')
+    // Code fences/blocks — describe rather than read aloud.
+    .replace(/```[\s\S]*?```/g, ' code block omitted ')
     .replace(/`([^`]+)`/g, '$1')
+    // Markdown emphasis (bold/italic), strikethrough, headings, list bullets.
     .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\*([^*\n]+)\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/_([^_\n]+)_/g, '$1')
+    .replace(/~~([^~]+)~~/g, '$1')
     .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^\s*[-*]\s+/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*>\s+/gm, '')
+    // Markdown links: keep label, drop URL.
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    // Naked URLs — TTS reads them letter by letter ("h-t-t-p-s colon slash").
+    // Just drop them; the chat UI shows citations separately.
+    .replace(/https?:\/\/\S+/gi, '')
+    .replace(/\bwww\.[^\s)]+/gi, '')
+    // Citation markers: [1], [12], [1,2], [1-3], 【1†source】 (Responses API).
+    .replace(/\[\s*\d+(?:\s*[,-]\s*\d+)*\s*\]/g, '')
+    .replace(/【[^】]*】/g, '')
+    // Source attributions in parens at the end of sentences:
+    // "(source: nytimes.com)", "(via reuters.com)".
+    .replace(/\((?:source|via|from)[^)]{0,80}\)/gi, '')
+    // Emojis & misc symbol pictographs — TTS verbalizes them inconsistently.
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+    // Em/en dashes → comma so TTS pauses naturally instead of saying "dash".
+    .replace(/\s*[—–]\s*/g, ', ')
+    // Footnote-style superscripts: ¹²³ etc.
+    .replace(/[²³¹⁰⁴-⁹]+/g, '')
+    // Collapse leftover whitespace and punctuation runs.
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/([,;:])\1+/g, '$1')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 4000);
