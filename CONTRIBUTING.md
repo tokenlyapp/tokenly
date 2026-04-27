@@ -38,7 +38,6 @@ To set expectations honestly, these are **not** things Tokenly will accept PRs f
 - Windows or Linux ports — Tokenly is deliberately a Mac-native tool. Cross-platform would require a different architecture.
 - Telemetry, analytics, or crash reporting of any kind — the "no telemetry" promise is a core product value.
 - Scraping consumer web UIs (ChatGPT.com, Claude.ai) or parsing encrypted local conversation stores — brittle and privacy-invasive.
-- Built-in AI chat or assistant features — Tokenly is a measurement tool, not a gateway.
 - In-app credit top-ups or managing provider billing on behalf of users — we show what you've spent; we don't touch your account.
 
 ## Local development
