@@ -512,9 +512,13 @@ ipcMain.handle('changelog:get', async () => {
   const timeout = setTimeout(() => ctrl.abort(), 8000);
   let res;
   try {
-    res = await fetch('https://api.github.com/repos/tokenlyapp/tokenly/releases?per_page=20', {
+    // Cache-bust the GitHub edge — the listing endpoint is eventually-
+    // consistent for ~30-60min after a publish, so freshly-shipped versions
+    // would flicker in/out depending on which edge node served the request.
+    res = await fetch(`https://api.github.com/repos/tokenlyapp/tokenly/releases?per_page=20&_=${Date.now()}`, {
       headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'tokenly/' + app.getVersion() },
       signal: ctrl.signal,
+      cache: 'no-store',
     });
   } catch { clearTimeout(timeout); return changelogCache ? changelogCache.data : []; }
   clearTimeout(timeout);
