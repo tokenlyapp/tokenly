@@ -200,15 +200,28 @@ The trend sparkline also splits — prior half rendered dimmed, current half bri
 
 ### Tokenly Chat *(Tokenly Max + AI)*
 
-- **Direct chat** with OpenAI (GPT-5, 4o, o3 family), Anthropic (Opus 4.7, Sonnet 4.6, Haiku 4.5), and Google (Gemini 2.5 Pro / Flash, 2.0 Flash) using your own API keys.
+- **Direct chat** with OpenAI (GPT-5, 4o, o3 family), Anthropic (Opus 4.7, Sonnet 4.6, Haiku 4.5), and Google Gemini (live model discovery — the dropdown shows whatever Gemini chat models your key currently has access to, refreshed every 5 minutes).
 - **Web search** built in — toggle a globe in the composer and the model grounds its reply with live results plus clickable source citations (OpenAI Responses API, Anthropic `web_search_20250305`, or Gemini Google Search depending on provider).
-- **Live dictation** — click the mic or press ⌘⇧Space anywhere; Tokenly streams ~2-second Whisper passes and updates the composer text in place so you see what was heard. Press Enter to send.
+- **Live dictation** — click the mic or press ⌘⇧Space anywhere; Tokenly streams 750ms `gpt-4o-mini-transcribe` passes (with `whisper-1` fallback) and updates the composer in place so you see what was heard. Backspace mid-dictation cleanly rebases — new audio appends to your edits instead of overwriting them. Press Enter to send (also stops the mic).
 - **Favorite models** — star the ones you actually use across providers; favorites pin to the top of every model picker (chat sheet + voice window).
 - **Conversation history** — every chat auto-saves, searchable, with per-conversation cost and tokens-by-model breakdown.
 
 ### Voice AI *(Tokenly Max + AI)*
 
 - **⌘⇧V from anywhere** opens a frameless, always-on-top voice window that listens continuously with VAD turn-taking — speak, pause, hear the reply spoken back, keep going.
+- **Voice plugins — sub-second answers without a web search round-trip.** The voice loop detects intent in your transcript and fetches live structured data directly, then hands it to the LLM to phrase. Built-in plugins (all free, most no-key):
+  - **Weather + air quality** — Open-Meteo, defaults to your IP-detected city
+  - **Calculator + unit conversion** — local, no network
+  - **Currency conversion** — exchangerate.host
+  - **Word definitions** — dictionaryapi.dev
+  - **Wikipedia summary** — for "tell me about X" / "who is Y"
+  - **Time + timezone** — local, supports city aliases ("what time is it in Tokyo")
+  - **Crypto prices** — CoinGecko
+  - **Stock prices** — Yahoo Finance
+  - **Hacker News** — Top / Show / Ask / Best / New routing
+  - **Translation** — LibreTranslate
+- **Sentence-chunked TTS** — the first sentence ships to TTS the moment it streams in, not at end-of-response, so you hear the start of the answer in ~1s instead of waiting on the full reply.
+- **`gpt-4o-mini-tts`** with prosody instructions — natural pronunciation of numbers, units, decimals, and abbreviations. ~25× cheaper than `tts-1`.
 - **Conversation memory** — on every voice turn, Tokenly injects a compact digest of your past conversations into the system prompt so the AI stays aware of what you've been working on across sessions.
 - **Usage-aware** — the voice AI also gets a live JSON snapshot of your current Tokenly numbers (per-provider tokens, costs, today's burn, top models, quota %), so you can ask *"how much have I spent on Claude this week?"* and get a real answer with real figures.
 - **Live cost meter** — a footer shows the running cost of the current voice conversation (STT + LLM + TTS), all billed directly to your provider account.
