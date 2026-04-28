@@ -1806,6 +1806,35 @@ const claudeRefreshInflight = new Map();
 // Returns the macOS Keychain account name for the "Claude Code-credentials"
 // item by parsing `security find-generic-password -g` output, or null if the
 // item isn't present.
+// Write a secret to the macOS Keychain WITHOUT putting it in argv. The
+// `security add-generic-password -w "<secret>"` form puts the entire secret
+// in argv, where any same-uid process can read it via `ps -wwww`. This
+// helper instead pipes the command through `security -i` (interactive mode)
+// over stdin, so the secret only crosses the pipe and never appears in
+// argv. The caller must handle errors — we throw on non-zero exit so the
+// existing try/catch flow in persistClaudeCredentials still works.
+//
+// Single-quote escape for the security CLI's shell-style command parser:
+// any literal `'` becomes `'\''` (close-quote, escaped quote, reopen quote).
+function writeKeychainSecret(service, account, secret) {
+  const { spawnSync } = require('child_process');
+  const esc = (s) => String(s).replace(/'/g, "'\\''");
+  const cmd = `add-generic-password -U -s '${esc(service)}' -a '${esc(account)}' -w '${esc(secret)}'\n`;
+  const result = spawnSync('/usr/bin/security', ['-i'], {
+    input: cmd,
+    encoding: 'utf8',
+    timeout: 5000,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const err = new Error(`security exited ${result.status}`);
+    err.code = `security_exit_${result.status}`;
+    err.stderr = result.stderr;
+    throw err;
+  }
+}
+
 function findClaudeKeychainAccount() {
   if (process.platform !== 'darwin') return null;
   const { execFileSync } = require('child_process');
@@ -1892,15 +1921,8 @@ function persistClaudeCredentials(originalRaw, source, refreshed, originalParsed
       canonicalError = 'keychain_no_account';
       console.warn('[oauth] claude keychain persist failed: account not found');
     } else {
-      const { execFileSync } = require('child_process');
       try {
-        // -U updates if the (service, account) tuple already exists.
-        execFileSync('/usr/bin/security',
-          ['add-generic-password', '-U',
-           '-s', CLAUDE_KEYCHAIN_SERVICE,
-           '-a', account,
-           '-w', next],
-          { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+        writeKeychainSecret(CLAUDE_KEYCHAIN_SERVICE, account, next);
         canonicalOk = true;
       } catch (e) {
         canonicalError = 'keychain_write_failed';
@@ -1919,14 +1941,8 @@ function persistClaudeCredentials(originalRaw, source, refreshed, originalParsed
   if (source === 'file' && canonicalOk && process.platform === 'darwin') {
     const account = findClaudeKeychainAccount();
     if (account) {
-      const { execFileSync } = require('child_process');
       try {
-        execFileSync('/usr/bin/security',
-          ['add-generic-password', '-U',
-           '-s', CLAUDE_KEYCHAIN_SERVICE,
-           '-a', account,
-           '-w', next],
-          { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+        writeKeychainSecret(CLAUDE_KEYCHAIN_SERVICE, account, next);
       } catch (e) {
         console.warn('[oauth] claude keychain write-through failed:', e?.code || e?.message || e);
       }
