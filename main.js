@@ -1763,6 +1763,46 @@ const CLAUDE_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 // or the next process launch will be stuck with an invalid refresh_token.
 const claudeRefreshedTokenCache = new Map();
 
+// De-dupes concurrent refreshes for the same refresh_token: Anthropic
+// invalidates the old token on first use, so a parallel second POST 401s.
+const claudeRefreshInflight = new Map();
+
+// --- Test sketches for the inflight dedup (cannot run yet — main.js does not
+// export refresh*OAuthToken; extract these helpers to their own module before
+// wiring a real test runner). Keep here as the spec they need to satisfy.
+//
+// (a) Two concurrent callers share one fetch and one resolution:
+//
+//   let calls = 0; let release;
+//   global.fetch = () => { calls++; return new Promise(r => { release = r; }); };
+//   const p1 = refreshClaudeOAuthToken({ refreshToken: 'rt_abc' });
+//   const p2 = refreshClaudeOAuthToken({ refreshToken: 'rt_abc' });
+//   assert.equal(p1, p2);                                  // same Promise
+//   release({ ok: true, json: async () => ({
+//     access_token: 'at_new', refresh_token: 'rt_new',
+//     expires_in: 28800, scope: 'user:profile' }) });
+//   const [a, b] = await Promise.all([p1, p2]);
+//   assert.equal(calls, 1);                                // single round-trip
+//   assert.equal(a, b);                                    // same resolution
+//
+// (b) Failed fetch clears the inflight slot so the next call retries:
+//
+//   let calls = 0;
+//   global.fetch = () => {
+//     calls++;
+//     if (calls === 1) return Promise.reject(new Error('ECONNRESET'));
+//     return Promise.resolve({ ok: true, json: async () => ({
+//       access_token: 'at_ok', refresh_token: 'rt_ok',
+//       expires_in: 28800, scope: 'user:profile' }) });
+//   };
+//   const first = await refreshClaudeOAuthToken({ refreshToken: 'rt_xyz' });
+//   assert.equal(first, null);                             // network error
+//   const second = await refreshClaudeOAuthToken({ refreshToken: 'rt_xyz' });
+//   assert.equal(calls, 2);                                // inflight cleared
+//   assert.equal(second.accessToken, 'at_ok');
+//
+// Same shape applies to refreshCodexOAuthToken / codexRefreshInflight.
+
 // Returns the macOS Keychain account name for the "Claude Code-credentials"
 // item by parsing `security find-generic-password -g` output, or null if the
 // item isn't present.
@@ -1825,37 +1865,42 @@ async function refreshClaudeOAuthToken(creds) {
   if (!creds || !creds.refreshToken) return null;
   const cached = claudeRefreshedTokenCache.get(creds.refreshToken);
   if (cached && cached.expiresAtMs - Date.now() > 60_000) return cached;
-  const body = new URLSearchParams({
-    grant_type: 'refresh_token',
-    refresh_token: creds.refreshToken,
-    client_id: CLAUDE_OAUTH_CLIENT_ID,
-  });
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 8000);
-  let res;
-  try {
-    res = await fetch(CLAUDE_OAUTH_REFRESH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-      body: body.toString(),
-      signal: ctrl.signal,
+  if (claudeRefreshInflight.has(creds.refreshToken)) return claudeRefreshInflight.get(creds.refreshToken);
+  const p = (async () => {
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: creds.refreshToken,
+      client_id: CLAUDE_OAUTH_CLIENT_ID,
     });
-  } catch { clearTimeout(timeout); return null; }
-  clearTimeout(timeout);
-  if (!res || !res.ok) return null;
-  let json;
-  try { json = await res.json(); } catch { return null; }
-  if (!json.access_token) return null;
-  const next = {
-    accessToken: json.access_token,
-    refreshToken: json.refresh_token || creds.refreshToken,
-    expiresAtMs: Date.now() + ((Number(json.expires_in) || 28800) * 1000),
-    scopes: Array.isArray(json.scope) ? json.scope
-      : (typeof json.scope === 'string' ? json.scope.split(/\s+/).filter(Boolean) : creds.scopes),
-    rateLimitTier: creds.rateLimitTier,
-  };
-  claudeRefreshedTokenCache.set(creds.refreshToken, next);
-  return next;
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 8000);
+    let res;
+    try {
+      res = await fetch(CLAUDE_OAUTH_REFRESH_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+        body: body.toString(),
+        signal: ctrl.signal,
+      });
+    } catch { clearTimeout(timeout); return null; }
+    clearTimeout(timeout);
+    if (!res || !res.ok) return null;
+    let json;
+    try { json = await res.json(); } catch { return null; }
+    if (!json.access_token) return null;
+    const next = {
+      accessToken: json.access_token,
+      refreshToken: json.refresh_token || creds.refreshToken,
+      expiresAtMs: Date.now() + ((Number(json.expires_in) || 28800) * 1000),
+      scopes: Array.isArray(json.scope) ? json.scope
+        : (typeof json.scope === 'string' ? json.scope.split(/\s+/).filter(Boolean) : creds.scopes),
+      rateLimitTier: creds.rateLimitTier,
+    };
+    claudeRefreshedTokenCache.set(creds.refreshToken, next);
+    return next;
+  })().finally(() => claudeRefreshInflight.delete(creds.refreshToken));
+  claudeRefreshInflight.set(creds.refreshToken, p);
+  return p;
 }
 
 function parseClaudeCredentials(raw) {
@@ -2088,47 +2133,55 @@ const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 // In-memory cache of refreshed Codex tokens — same shape as the Claude one.
 const codexRefreshedTokenCache = new Map(); // refresh_token → { accessToken, expiresAtMs, accountId, idToken, refreshToken }
 
+// Same dedup pattern as the Claude path — see claudeRefreshInflight.
+const codexRefreshInflight = new Map();
+
 async function refreshCodexOAuthToken(creds) {
   if (!creds || !creds.refreshToken) return null;
   const cached = codexRefreshedTokenCache.get(creds.refreshToken);
   if (cached && cached.expiresAtMs - Date.now() > 5 * 60_000) return cached;
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 8000);
-  let res;
-  try {
-    res = await fetch(CODEX_OAUTH_REFRESH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({
-        client_id: CODEX_OAUTH_CLIENT_ID,
-        grant_type: 'refresh_token',
-        refresh_token: creds.refreshToken,
-        scope: 'openid profile email',
-      }),
-      signal: ctrl.signal,
-    });
-  } catch { clearTimeout(timeout); return null; }
-  clearTimeout(timeout);
-  if (!res || !res.ok) return null;
-  let json;
-  try { json = await res.json(); } catch { return null; }
-  if (!json.access_token) return null;
-  // JWT exp claim → expiresAtMs. Falls back to 8 days if the JWT isn't parseable.
-  let expMs = Date.now() + 8 * 24 * 3600_000;
-  try {
-    const parts = String(json.access_token).split('.');
-    const payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
-    if (typeof payload.exp === 'number') expMs = payload.exp * 1000;
-  } catch { /* keep fallback */ }
-  const next = {
-    accessToken: json.access_token,
-    refreshToken: json.refresh_token || creds.refreshToken,
-    idToken: json.id_token || creds.idToken,
-    accountId: creds.accountId,
-    expiresAtMs: expMs,
-  };
-  codexRefreshedTokenCache.set(creds.refreshToken, next);
-  return next;
+  if (codexRefreshInflight.has(creds.refreshToken)) return codexRefreshInflight.get(creds.refreshToken);
+  const p = (async () => {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 8000);
+    let res;
+    try {
+      res = await fetch(CODEX_OAUTH_REFRESH_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({
+          client_id: CODEX_OAUTH_CLIENT_ID,
+          grant_type: 'refresh_token',
+          refresh_token: creds.refreshToken,
+          scope: 'openid profile email',
+        }),
+        signal: ctrl.signal,
+      });
+    } catch { clearTimeout(timeout); return null; }
+    clearTimeout(timeout);
+    if (!res || !res.ok) return null;
+    let json;
+    try { json = await res.json(); } catch { return null; }
+    if (!json.access_token) return null;
+    // JWT exp claim → expiresAtMs. Falls back to 8 days if the JWT isn't parseable.
+    let expMs = Date.now() + 8 * 24 * 3600_000;
+    try {
+      const parts = String(json.access_token).split('.');
+      const payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+      if (typeof payload.exp === 'number') expMs = payload.exp * 1000;
+    } catch { /* keep fallback */ }
+    const next = {
+      accessToken: json.access_token,
+      refreshToken: json.refresh_token || creds.refreshToken,
+      idToken: json.id_token || creds.idToken,
+      accountId: creds.accountId,
+      expiresAtMs: expMs,
+    };
+    codexRefreshedTokenCache.set(creds.refreshToken, next);
+    return next;
+  })().finally(() => codexRefreshInflight.delete(creds.refreshToken));
+  codexRefreshInflight.set(creds.refreshToken, p);
+  return p;
 }
 
 // Returns ms until JWT exp, or 0 if unparseable / no exp claim.
