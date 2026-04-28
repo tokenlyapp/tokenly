@@ -1652,6 +1652,36 @@ function setupPricingRefresh() {
   setInterval(() => fetchRemotePricing().catch(() => {}), 24 * 60 * 60 * 1000);
 }
 
+// Per-provider default cache-read multipliers, applied when the loaded
+// pricing payload doesn't specify multipliers.cache_read for the block.
+// These match each provider's published rates as of April 2026 — used by
+// BOTH the poll-path cost helpers (costFromUsage, costFromGeminiTokens)
+// AND the chat-path costUSD via getCacheReadMul. Centralizing prevents
+// the drift bug where the chat path silently picked up remote multiplier
+// updates while the poll path stayed on a hardcoded value, or vice versa.
+//
+// Note on openai: 0.1 matches the bundled fallback in
+// getPricingTablesForRenderer; the actual per-model rates vary (gpt-4o
+// 0.5×, mini 0.25×, o-series 0.5×). H2 from the pricing review proposes
+// per-row overrides on each model entry — separate PR.
+const DEFAULT_CACHE_READ_MUL = {
+  claude: 0.1,
+  openai: 0.1,
+  gemini: 0.25,
+};
+
+// Single source of truth for the cache-read multiplier across poll path
+// and chat path. Reads remotePricing[provider].multipliers.cache_read when
+// available and finite/non-negative; otherwise the per-provider default.
+// Caller passes the internal provider key ('claude' | 'openai' | 'gemini').
+function getCacheReadMul(providerKey) {
+  if (remotePricing) {
+    const m = Number(remotePricing.providers?.[providerKey]?.multipliers?.cache_read);
+    if (Number.isFinite(m) && m >= 0) return m;
+  }
+  return DEFAULT_CACHE_READ_MUL[providerKey] ?? 0.1;
+}
+
 // Look up a remote rate row for a provider/model. Returns null if no remote
 // data is loaded or no row matches — caller falls back to bundled defaults.
 function remotePriceFor(providerKey, modelName) {
@@ -1742,7 +1772,9 @@ function costFromUsage(model, u) {
   const cacheCreation = (cache5m + cache1h) > 0
     ? (cache5m * 1.25 + cache1h * 2) * p.input / 1e6
     : (u.cache_creation_input_tokens || 0) * 1.25 * p.input / 1e6;
-  const cacheRead = (u.cache_read_input_tokens || 0) * 0.1 * p.input / 1e6;
+  // Cache-read multiplier sourced from the shared helper so the poll path
+  // and chat-path costUSD stay in lockstep — see getCacheReadMul / H1.
+  const cacheRead = (u.cache_read_input_tokens || 0) * getCacheReadMul('claude') * p.input / 1e6;
   return input + output + cacheCreation + cacheRead;
 }
 
@@ -2935,7 +2967,11 @@ function costFromGeminiTokens(model, t) {
   const p = geminiPriceFor(model);
   const input    = (t.input    || 0) * p.input  / 1e6;
   const output   = (t.output   || 0) * p.output / 1e6;
-  const cached   = (t.cached   || 0) * p.input  * 0.25 / 1e6;   // cache read
+  // Cache-read multiplier from shared helper (was hardcoded 0.25, which is
+  // Gemini's published rate — but if a remote pricing payload ever ships a
+  // different value, both poll and chat paths now honor it). See H3 in
+  // the pricing review.
+  const cached   = (t.cached   || 0) * p.input  * getCacheReadMul('gemini') / 1e6;
   const thoughts = (t.thoughts || 0) * p.output / 1e6;          // reasoning priced as output
   const tool     = (t.tool     || 0) * p.input  / 1e6;          // tool context priced as input
   return input + output + cached + thoughts + tool;
@@ -3795,11 +3831,16 @@ function pricingForChat(provider, modelId) {
   const key = provider === 'anthropic' ? 'claude' : provider === 'google' ? 'gemini' : 'openai';
   const block = tables.providers[key];
   if (!block) return null;
+  // Single source of truth for the cache-read multiplier — same helper
+  // used by costFromUsage and costFromGeminiTokens in the poll path. Stops
+  // the H1/H3 drift where chat path could pick up a remote multiplier
+  // update while the poll path stayed on a hardcoded value.
+  const cacheReadMul = getCacheReadMul(key);
   const lc = String(modelId).toLowerCase();
   for (const m of block.models) {
     try {
       const re = new RegExp(m.match || '', 'i');
-      if (re.test(lc)) return { input: m.input, output: m.output, cache_read: block.multipliers?.cache_read || 0.1 };
+      if (re.test(lc)) return { input: m.input, output: m.output, cache_read: cacheReadMul };
     } catch {}
   }
   // Defensive fallback when the remote payload omits a `default` block.
@@ -3809,7 +3850,7 @@ function pricingForChat(provider, modelId) {
   // stream. validatePricingPayload should be tightened to reject this in a
   // future PR.
   const d = block.default || { input: 0, output: 0 };
-  return { input: d.input, output: d.output, cache_read: block.multipliers?.cache_read || 0.1 };
+  return { input: d.input, output: d.output, cache_read: cacheReadMul };
 }
 
 // Per-provider semantics for `usage.input` (set at the streamer boundary):
