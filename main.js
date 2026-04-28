@@ -955,19 +955,41 @@ const VALID_TIERS = new Set(['max', 'max-ai']);
 
 function licensePath() { return path.join(app.getPath('userData'), 'license.json'); }
 
+// Maximum time we'll trust a cached license without server confirmation.
+// Background re-verify normally runs every 24h; this allows up to a week of
+// offline use (travel, flaky wifi) before forcing a re-check. Without this
+// cap, a refunded license could keep working indefinitely as long as the
+// machine never reaches Stripe again.
+const LICENSE_OFFLINE_GRACE_MS = 7 * 24 * 3600 * 1000;
+
 function loadLicense() {
   try {
     const p = licensePath();
     if (!fs.existsSync(p)) return null;
     const data = JSON.parse(fs.readFileSync(p, 'utf8'));
-    if (data && VALID_TIERS.has(data.tier) && data.session_id) return data;
+    if (!data || !VALID_TIERS.has(data.tier) || !data.session_id) return null;
+    // Offline-grace cap. last_verified_at is set on activate AND on every
+    // successful background re-verify, so this only triggers when the user
+    // has been offline (or the server has been unreachable) for >7 days.
+    // Field-missing case: legacy licenses pre-dating this field (none in
+    // production yet) will skip the check — they'll get covered on next
+    // successful re-verify.
+    if (data.last_verified_at && Date.now() - data.last_verified_at > LICENSE_OFFLINE_GRACE_MS) {
+      return null;
+    }
+    return data;
   } catch {}
   return null;
 }
 
 function saveLicense(license) {
   try {
-    fs.writeFileSync(licensePath(), JSON.stringify(license, null, 2));
+    // Atomic write + 0o600 to match the OAuth credentials pattern. Prevents
+    // partial-write states (e.g. crash mid-write) and keeps the license file
+    // unreadable by other users on shared machines.
+    const tmp = licensePath() + '.tokenly.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(license, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, licensePath());
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e?.message || e) };
@@ -1020,8 +1042,15 @@ ipcMain.handle('license:activate', async (_e, code) => {
 });
 
 ipcMain.handle('license:deactivate', () => {
-  try { if (fs.existsSync(licensePath())) fs.unlinkSync(licensePath()); } catch {}
-  return { ok: true, tier: 'free' };
+  try {
+    if (fs.existsSync(licensePath())) fs.unlinkSync(licensePath());
+    return { ok: true, tier: 'free' };
+  } catch (e) {
+    // Surface the failure for symmetry with saveLicense — silent ok=true
+    // here would let the renderer claim "deactivated" while the file still
+    // existed and the next launch would re-load the old tier.
+    return { ok: false, reason: 'unlink_failed', error: String(e?.message || e) };
+  }
 });
 
 // Background re-verify. Fires 20s after launch (give the app time to settle)
@@ -1051,6 +1080,11 @@ async function backgroundVerifyLicense() {
     if (body && body.ok === false && REVOKE_REASONS.has(body.reason)) {
       console.log('[license] revoked by re-verify:', body.reason);
       try { if (fs.existsSync(licensePath())) fs.unlinkSync(licensePath()); } catch {}
+      // Order is intentional: unlink first, broadcast second. A concurrent
+      // license:get IPC call landing between the two reads from disk and
+      // sees the file is gone, so it returns tier=free — i.e. it observes
+      // the same state we're about to broadcast. No race window where a
+      // caller could see a stale "still paid" view.
       for (const w of BrowserWindow.getAllWindows()) {
         try { w.webContents.send('license-changed', { tier: 'free', license: null, reason: body.reason }); } catch {}
       }
