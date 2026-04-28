@@ -1781,13 +1781,49 @@ function findClaudeKeychainAccount() {
   }
 }
 
-// Persist refreshed credentials. Writes to whichever source loaded them
-// (file or Keychain). Best-effort — failures are logged silently because the
-// in-memory cache still serves the running session.
+// Surface a single user-facing notification per (provider, error kind) per
+// 24h when OAuth credential persistence fails. Without this, a refresh that
+// rotates the token but fails to write back leaves the user silently locked
+// out at next launch — they'd just see a broken card with no diagnostic and
+// no idea their refresh token rotated underneath them.
+//
+// The body never includes token text or paths — only the error code.
+// Dedupe is done through the existing alert ledger so it survives restarts.
+function maybeFireOAuthPersistFailure(provider, error) {
+  const key = `oauth-persist-failure:${provider}:${error}`;
+  const ledger = loadAlertLedger();
+  const last = ledger[key];
+  if (last && Date.now() - last < 24 * 3600 * 1000) return;
+  const labels = { claude: 'Claude Code', codex: 'ChatGPT (Codex)' };
+  const label = labels[provider] || provider;
+  fireNotification(
+    `Tokenly: ${label} credentials`,
+    `Couldn't save refreshed credentials (${error}). You may need to re-authenticate ${label} on next launch.`,
+    { urgent: true },
+  );
+  ledger[key] = Date.now();
+  saveAlertLedger(ledger);
+}
+
+// Persist refreshed credentials. Writes to the source that loaded them, AND
+// also writes-through to the Keychain when source=file on macOS and a
+// Keychain item already exists (otherwise a stale Keychain becomes the
+// active source after manual file cleanup or a Claude CLI re-init).
+//
+// Returns {ok, error}. Silent failure here = silent auth_expired at next
+// launch — callers MUST surface failures via maybeFireOAuthPersistFailure.
 function persistClaudeCredentials(originalRaw, source, refreshed, originalParsed) {
-  if (!refreshed || !refreshed.refreshToken || !refreshed.accessToken) return;
+  if (!refreshed || !refreshed.refreshToken || !refreshed.accessToken) {
+    return { ok: false, error: 'no_refresh' };
+  }
+  // Parse already succeeded upstream (loadClaudeOAuthCredentials → parse →
+  // refresh → here). If we still can't parse, something corrupted the input
+  // between load and here — refuse to write a stripped object that would
+  // drop sibling fields the Claude CLI expects (telemetry IDs, etc).
   let jsonObj;
-  try { jsonObj = JSON.parse(originalRaw); } catch { jsonObj = {}; }
+  try { jsonObj = JSON.parse(originalRaw); } catch {
+    return { ok: false, error: 'parse_failed' };
+  }
   const oa = jsonObj.claudeAiOauth || {};
   // Preserve every field on the original oa block; only update the rotating ones.
   oa.accessToken  = refreshed.accessToken;
@@ -1797,28 +1833,67 @@ function persistClaudeCredentials(originalRaw, source, refreshed, originalParsed
   jsonObj.claudeAiOauth = oa;
   const next = JSON.stringify(jsonObj);
 
+  let canonicalOk = false;
+  let canonicalError = null;
+
   if (source === 'file') {
     try {
       const tmp = CLAUDE_CREDENTIALS_FILE + '.tokenly.tmp';
       fs.writeFileSync(tmp, next, { mode: 0o600 });
       fs.renameSync(tmp, CLAUDE_CREDENTIALS_FILE);
-    } catch { /* non-fatal */ }
-    return;
-  }
-  if (source === 'keychain' && process.platform === 'darwin') {
+      canonicalOk = true;
+    } catch (e) {
+      canonicalError = 'file_write_failed';
+      console.warn('[oauth] claude file persist failed:', e?.code || e?.message || e);
+    }
+  } else if (source === 'keychain' && process.platform === 'darwin') {
     const account = findClaudeKeychainAccount();
-    if (!account) return;
-    const { execFileSync } = require('child_process');
-    try {
-      // -U updates if the (service, account) tuple already exists.
-      execFileSync('/usr/bin/security',
-        ['add-generic-password', '-U',
-         '-s', CLAUDE_KEYCHAIN_SERVICE,
-         '-a', account,
-         '-w', next],
-        { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch { /* non-fatal — first write may need user to grant Keychain access */ }
+    if (!account) {
+      canonicalError = 'keychain_no_account';
+      console.warn('[oauth] claude keychain persist failed: account not found');
+    } else {
+      const { execFileSync } = require('child_process');
+      try {
+        // -U updates if the (service, account) tuple already exists.
+        execFileSync('/usr/bin/security',
+          ['add-generic-password', '-U',
+           '-s', CLAUDE_KEYCHAIN_SERVICE,
+           '-a', account,
+           '-w', next],
+          { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+        canonicalOk = true;
+      } catch (e) {
+        canonicalError = 'keychain_write_failed';
+        console.warn('[oauth] claude keychain persist failed:', e?.code || e?.message || e);
+      }
+    }
+  } else {
+    return { ok: false, error: 'unknown_source' };
   }
+
+  // Write-through to the OTHER store when source=file on darwin and a
+  // Keychain item exists. Best-effort — failure here doesn't fail the whole
+  // operation because the canonical store wrote successfully. We DO log it
+  // because a stale Keychain becomes the active source if the file is later
+  // removed (manual cleanup, OS migration, Claude CLI re-init).
+  if (source === 'file' && canonicalOk && process.platform === 'darwin') {
+    const account = findClaudeKeychainAccount();
+    if (account) {
+      const { execFileSync } = require('child_process');
+      try {
+        execFileSync('/usr/bin/security',
+          ['add-generic-password', '-U',
+           '-s', CLAUDE_KEYCHAIN_SERVICE,
+           '-a', account,
+           '-w', next],
+          { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (e) {
+        console.warn('[oauth] claude keychain write-through failed:', e?.code || e?.message || e);
+      }
+    }
+  }
+
+  return canonicalOk ? { ok: true } : { ok: false, error: canonicalError || 'unknown' };
 }
 
 async function refreshClaudeOAuthToken(creds) {
@@ -1990,7 +2065,13 @@ async function fetchClaudeOAuthQuota() {
     const refreshed = await refreshClaudeOAuthToken(creds);
     if (refreshed) {
       creds = { ...creds, ...refreshed };
-      persistClaudeCredentials(loaded.raw, loaded.source, refreshed, loaded.creds);
+      const persisted = persistClaudeCredentials(loaded.raw, loaded.source, refreshed, loaded.creds);
+      if (!persisted.ok) {
+        // Refresh succeeded but writeback failed — Anthropic has invalidated
+        // the old refresh_token by now, so the next process launch will be
+        // dead unless we tell the user to re-auth.
+        maybeFireOAuthPersistFailure('claude', persisted.error || 'unknown');
+      }
     } else if (Date.now() >= creds.expiresAtMs) {
       return withQuotaCache('claude-code', null, 'auth_expired');
     }
@@ -2169,19 +2250,33 @@ function readCodexAuth() {
 // avoid the same single-use trap Anthropic has. Updates last_refresh so the
 // codex CLI sees the file as fresh and skips its own redundant refresh.
 function persistCodexCredentials(originalRaw, refreshed) {
-  if (!refreshed || !refreshed.accessToken) return;
+  if (!refreshed || !refreshed.accessToken) {
+    return { ok: false, error: 'no_refresh' };
+  }
   let json;
-  try { json = JSON.parse(originalRaw); } catch { return; }
+  try { json = JSON.parse(originalRaw); } catch {
+    return { ok: false, error: 'parse_failed' };
+  }
   if (!json.tokens) json.tokens = {};
-  json.tokens.access_token  = refreshed.accessToken;
-  json.tokens.refresh_token = refreshed.refreshToken;
+  json.tokens.access_token = refreshed.accessToken;
+  // Only overwrite refresh_token if we actually got one back. The refresher
+  // already falls back to creds.refreshToken when the response omits it, so
+  // this should always be truthy — but guard against a future code path
+  // passing a refreshed object without it (would otherwise wipe a working
+  // token to undefined, which JSON.stringify drops, leaving the file with
+  // no refresh capability at all).
+  if (refreshed.refreshToken) json.tokens.refresh_token = refreshed.refreshToken;
   if (refreshed.idToken) json.tokens.id_token = refreshed.idToken;
   json.last_refresh = new Date().toISOString();
   try {
     const tmp = CODEX_AUTH_FILE + '.tokenly.tmp';
     fs.writeFileSync(tmp, JSON.stringify(json, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, CODEX_AUTH_FILE);
-  } catch { /* non-fatal — in-memory cache still serves the running session */ }
+    return { ok: true };
+  } catch (e) {
+    console.warn('[oauth] codex persist failed:', e?.code || e?.message || e);
+    return { ok: false, error: 'file_write_failed' };
+  }
 }
 
 // JWT exp claim is in seconds since epoch. Returns true if the token is
@@ -2246,7 +2341,13 @@ async function fetchCodexOAuthQuota() {
     const refreshed = await refreshCodexOAuthToken(creds);
     if (refreshed) {
       creds = { ...creds, accessToken: refreshed.accessToken, idToken: refreshed.idToken, refreshToken: refreshed.refreshToken };
-      persistCodexCredentials(loaded.raw, refreshed);
+      const persisted = persistCodexCredentials(loaded.raw, refreshed);
+      if (!persisted.ok) {
+        // OpenAI MAY rotate refresh_token (OAuth allows it either way). If it
+        // did, the in-memory cache is correct but the file isn't — next
+        // launch will read the dead token. Tell the user.
+        maybeFireOAuthPersistFailure('codex', persisted.error || 'unknown');
+      }
     } else if (msLeft <= 0) {
       return withQuotaCache('codex', null, 'auth_expired');
     }
