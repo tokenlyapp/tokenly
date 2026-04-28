@@ -1568,13 +1568,46 @@ function pricingCachePath() {
   return path.join(app.getPath('userData'), 'pricing.json');
 }
 
+// Reject malformed or hostile pricing payloads BEFORE they're cached or used
+// for cost math. We control the server but the disk cache survives a server
+// compromise — and the cost math has no further sanity checks downstream
+// (negative rates would silently produce negative costs, undefined defaults
+// would crash chat:stream). Strict validation here is the trust boundary.
 function validatePricingPayload(data) {
   if (!data || typeof data !== 'object') return false;
   if (data.schema_version !== PRICING_SCHEMA_VERSION) return false;
   if (!data.providers || typeof data.providers !== 'object') return false;
+
+  const isNonNegFinite = (n) => Number.isFinite(n) && n >= 0;
+  const isValidRate = (row) =>
+    row && typeof row === 'object' &&
+    isNonNegFinite(Number(row.input)) &&
+    isNonNegFinite(Number(row.output));
+
   for (const k of ['claude', 'openai', 'gemini']) {
     const p = data.providers[k];
-    if (!p || !Array.isArray(p.models)) return false;
+    if (!p || typeof p !== 'object') return false;
+    if (!Array.isArray(p.models)) return false;
+    // Every model row must have a string match + non-negative finite rates.
+    // Bad rows would later short-circuit cost math to a wrong dollar value.
+    for (const row of p.models) {
+      if (!row || typeof row.match !== 'string') return false;
+      if (!isValidRate(row)) return false;
+    }
+    // Default block is required (chat path falls back to {0,0} defensively
+    // but the canonical contract is that the server always ships a default).
+    if (!isValidRate(p.default)) return false;
+    // Multipliers are optional, but if present every value must be a
+    // non-negative finite number — masks server-side typos like
+    // multipliers.cache_read = "yes".
+    if (p.multipliers != null) {
+      if (typeof p.multipliers !== 'object') return false;
+      for (const v of Object.values(p.multipliers)) {
+        // Booleans (e.g. multipliers.thoughts_as_output) are allowed pass-through.
+        if (typeof v === 'boolean') continue;
+        if (!isNonNegFinite(Number(v))) return false;
+      }
+    }
   }
   return true;
 }
@@ -1624,20 +1657,25 @@ function remotePriceFor(providerKey, modelName) {
   if (!remotePricing) return null;
   const provider = remotePricing.providers?.[providerKey];
   if (!provider || !Array.isArray(provider.models)) return null;
+  // Defense in depth: validatePricingPayload already rejects negative/NaN
+  // rates and required default blocks, but reject anything that slips
+  // through (older cached payload from before the strict validator,
+  // edge cases) so we never multiply tokens by a bad number.
+  const isNonNegFinite = (n) => Number.isFinite(n) && n >= 0;
   const m = String(modelName || '');
   for (const row of provider.models) {
     if (typeof row.match !== 'string') continue;
     try {
       if (new RegExp(row.match).test(m)) {
         const input = Number(row.input), output = Number(row.output);
-        if (Number.isFinite(input) && Number.isFinite(output)) return { input, output };
+        if (isNonNegFinite(input) && isNonNegFinite(output)) return { input, output };
       }
     } catch { /* malformed regex on remote row; skip */ }
   }
   const d = provider.default;
   if (d) {
     const input = Number(d.input), output = Number(d.output);
-    if (Number.isFinite(input) && Number.isFinite(output)) return { input, output };
+    if (isNonNegFinite(input) && isNonNegFinite(output)) return { input, output };
   }
   return null;
 }
