@@ -3802,16 +3802,46 @@ function pricingForChat(provider, modelId) {
       if (re.test(lc)) return { input: m.input, output: m.output, cache_read: block.multipliers?.cache_read || 0.1 };
     } catch {}
   }
-  return { input: block.default.input, output: block.default.output, cache_read: block.multipliers?.cache_read || 0.1 };
+  // Defensive fallback when the remote payload omits a `default` block.
+  // Without this, an otherwise-valid payload missing default crashed
+  // pricingForChat → costUSD inside the chat:stream IPC. Returning {0, 0}
+  // silently undercounts cost for unknown models — better than killing the
+  // stream. validatePricingPayload should be tightened to reject this in a
+  // future PR.
+  const d = block.default || { input: 0, output: 0 };
+  return { input: d.input, output: d.output, cache_read: block.multipliers?.cache_read || 0.1 };
 }
+
+// Per-provider semantics for `usage.input` (set at the streamer boundary):
+//   anthropic  → NEW input only. cached and cache_creation are SEPARATE
+//                buckets — see streamAnthropic line ~3668: input_tokens is
+//                guaranteed to exclude cache_read_input_tokens AND
+//                cache_creation_input_tokens. Subtracting cached again would
+//                under-bill input by up to 50% on cache-heavy turns.
+//   openai     → TOTAL prompt tokens — cached is a SUBSET. Must subtract
+//                to avoid double-billing cached at the input rate. See
+//                streamOpenAI ~3624 reading prompt_tokens + cached_tokens.
+//   google     → Same as openai. promptTokenCount is total, cached is subset.
+//                See streamGoogle ~3769.
+//
+// Anthropic also emits `usage.cache_creation` (write-through to prompt cache)
+// which OpenAI / Google don't. Billed at 1.25× input as a conservative
+// 5-minute-cache rate; matches the poll-path fallback in costFromUsage when
+// the 5m/1h split isn't reported. Adding the 5m/1h split would require
+// capturing them as separate fields at the streamer boundary; deferred.
 function costUSD(provider, modelId, usage) {
   const p = pricingForChat(provider, modelId);
   if (!p) return 0;
-  const cached = usage.cached || 0;
-  const billedInput = Math.max(0, (usage.input || 0) - cached);
+  const cached      = usage.cached || 0;
+  const cacheCreate = usage.cache_creation || 0;
+  const isAnthropic = provider === 'anthropic';
+  const billedInput = isAnthropic
+    ? (usage.input || 0)
+    : Math.max(0, (usage.input || 0) - cached);
   return (
-    (billedInput / 1e6) * p.input +
-    (cached     / 1e6) * p.input * (p.cache_read || 0.1) +
+    (billedInput  / 1e6) * p.input +
+    (cached       / 1e6) * p.input * (p.cache_read || 0.1) +
+    (cacheCreate  / 1e6) * p.input * 1.25 +
     ((usage.output || 0) / 1e6) * p.output
   );
 }
