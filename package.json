@@ -1,7 +1,7 @@
 {
   "name": "tokenly",
   "productName": "Tokenly",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Tokenly — live monitor for your AI API spend across OpenAI, Anthropic, DeepSeek, and OpenRouter.",
   "main": "main.js",
   "scripts": {
