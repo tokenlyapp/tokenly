@@ -32,6 +32,30 @@ function SettingsSheet({
     if (res) setLaunchAtLoginState(res);
   };
 
+  // Voice AI hotkey — Command+Shift+<letter>. Default V. The accelerator is
+  // stored in voice-prefs.json as "CommandOrControl+Shift+X" and re-registered
+  // by main.js whenever chat:set-prefs runs, so changes apply immediately
+  // (no app restart needed).
+  const [voiceHotkeyLetter, setVoiceHotkeyLetter] = React.useState('V');
+  React.useEffect(() => {
+    if (!open || !window.api?.chatGetPrefs) return;
+    window.api.chatGetPrefs().then((prefs) => {
+      const accel = prefs?.voiceModeHotkey || 'CommandOrControl+Shift+V';
+      // Pick the trailing key — last segment after the last "+".
+      const last = accel.split('+').pop().toUpperCase();
+      if (/^[A-Z]$/.test(last)) setVoiceHotkeyLetter(last);
+    }).catch(() => {});
+  }, [open]);
+  const onVoiceHotkeyChange = async (letter) => {
+    const upper = String(letter || '').toUpperCase();
+    if (!/^[A-Z]$/.test(upper)) return;
+    setVoiceHotkeyLetter(upper); // optimistic
+    if (!window.api?.chatSetPrefs) return;
+    try {
+      await window.api.chatSetPrefs({ voiceModeHotkey: `CommandOrControl+Shift+${upper}` });
+    } catch {}
+  };
+
   return (
     <React.Fragment>
       <div
@@ -154,6 +178,52 @@ function SettingsSheet({
             </button>
           </div>
         )}
+
+        {/* Voice AI hotkey — Command + Shift + <letter>. Default V. The user
+            picks the trailing letter; ⌘⇧ stays fixed because changing the
+            modifier surface widens the conflict footprint with system
+            shortcuts. Save fires on each change and re-registers the global
+            shortcut in main.js. */}
+        <div style={{
+          background: t.card, border: `1px solid ${t.cardBorder}`,
+          borderRadius: 10, padding: '10px 12px', marginBottom: 12,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                Voice AI hotkey
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center',
+                  fontSize: 10.5, fontWeight: 700, letterSpacing: 0.4,
+                  padding: '2px 7px', borderRadius: 5,
+                  background: 'rgba(124,92,255,0.14)',
+                  border: '1px solid rgba(124,92,255,0.40)',
+                  color: '#c4b5fd', fontFamily: TOKENS.type.mono,
+                }}>⌘⇧{voiceHotkeyLetter}</span>
+              </div>
+              <div style={{ fontSize: 10, color: t.textMute, marginTop: 2, lineHeight: 1.45 }}>
+                Press ⌘⇧{voiceHotkeyLetter} from anywhere on macOS to open the Voice AI window. Pick a different letter if it conflicts with another app.
+              </div>
+            </div>
+            <select
+              value={voiceHotkeyLetter}
+              onChange={(e) => onVoiceHotkeyChange(e.target.value)}
+              style={{
+                background: 'rgba(0,0,0,0.3)', color: t.text,
+                border: `1px solid ${t.cardBorder}`,
+                borderRadius: 7, padding: '6px 10px',
+                fontSize: 13, fontFamily: TOKENS.type.mono,
+                outline: 'none', cursor: 'pointer',
+                flexShrink: 0, minWidth: 56, textAlign: 'center',
+              }}
+              title="Pick the trailing letter for ⌘⇧[letter]"
+            >
+              {Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i)).map((L) => (
+                <option key={L} value={L}>{L}</option>
+              ))}
+            </select>
+          </div>
+        </div>
 
         {/* Menu bar tokens — dual control: which source, which period */}
         <div style={{

@@ -208,7 +208,7 @@ The trend sparkline also splits — prior half rendered dimmed, current half bri
 
 ### Voice AI *(Tokenly Max + AI)*
 
-- **⌘⇧V from anywhere** opens a frameless, always-on-top voice window that listens continuously with VAD turn-taking — speak, pause, hear the reply spoken back, keep going.
+- **⌘⇧V from anywhere** opens a frameless, always-on-top voice window that listens continuously with VAD turn-taking — speak, pause, hear the reply spoken back, keep going. The trailing letter is **configurable** in Settings → Voice AI hotkey if `V` conflicts with another app on your Mac.
 - **Voice plugins — sub-second answers without a web search round-trip.** The voice loop detects intent in your transcript and fetches live structured data directly, then hands it to the LLM to phrase. Built-in plugins (all free, most no-key):
   - **Weather + air quality** — Open-Meteo, defaults to your IP-detected city
   - **Calculator + unit conversion** — local, no network

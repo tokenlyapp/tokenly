@@ -96,6 +96,11 @@ function createPopoverWindow() {
     webPreferences: commonWebPrefs,
   });
   popoverWin.setWindowButtonVisibility?.(false);
+  // Make the popover follow the user's active Space instead of staying tied
+  // to whichever Space it was first shown on. Without this, clicking the
+  // tray icon from another Space yanks the user back to the original Space
+  // to reveal the existing window.
+  popoverWin.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
   popoverWin.loadFile('index.html', { hash: 'popover' });
   popoverWin.on('blur', () => {
     if (Date.now() - popoverJustToggled < 250) return;
@@ -4354,6 +4359,10 @@ function openVoiceMateWindow() {
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: commonWebPrefs,
   });
+  // Follow the user's active Space — voice mate is a floating overlay
+  // triggered by a global shortcut, so it must appear wherever the user
+  // currently is rather than dragging them back to its origin Space.
+  voiceMateWin.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
   voiceMateWin.loadFile('index.html', { hash: 'voicemate' });
   // Position: center over the Tokenly popover when it's visible (the user
   // is engaging with the app — voice should feel like an overlay layered
