@@ -6,6 +6,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "audit:content": "node scripts/audit-content-claims.mjs",
     "dist": "electron-builder && npm run archive-dmg",
     "dist:publish": "electron-builder --publish always && npm run archive-dmg",
     "archive-dmg": "mkdir -p /Users/adowney/Documents/Tokenly/versions && cp dist/Tokenly-*-universal.dmg /Users/adowney/Documents/Tokenly/versions/"

@@ -63,7 +63,7 @@ Every token and dollar your AI tools consume, across six providers, surfaced in 
 
 ## What is Tokenly?
 
-Tokenly is a native macOS menu-bar app that shows you — **live, in real time** — exactly how many tokens you're burning and how much money you're spending across every major AI service you use.
+Tokenly is a Mac menu-bar app that shows you — **live, in real time** — exactly how many tokens you're burning and how much money you're spending across every major AI service you use.
 
 It answers the question every AI-powered developer asks at the end of the month: *"Where did all that money go?"*
 
@@ -179,7 +179,7 @@ The trend sparkline also splits — prior half rendered dimmed, current half bri
 ### Budget alerts *(Tokenly Max)*
 
 - **Per-provider and overall daily budgets** — set in Settings, persisted locally.
-- **Three-stage notifications** — native macOS alerts at 50% / 80% / 100% of your daily budget, once per threshold per UTC day.
+- **Three-stage notifications** — macOS notifications at 50% / 80% / 100% of your daily budget, once per threshold per UTC day.
 - **Daily spend summary** — one notification at your chosen local hour (default 5 pm) summarizing the day's burn across every provider.
 - **Stateful ledger** — alerts are deduplicated via `~/Library/Application Support/Tokenly/alerts.json` so you never get spammed.
 
@@ -402,7 +402,7 @@ No. If you don't use Claude Code, Codex, or Gemini CLI, those cards just stay em
 No — the usage/cost endpoints require **admin**-scoped keys. For OpenAI that's `sk-admin-…`; for Anthropic it's `sk-ant-admin-…`. OpenRouter requires a management key. Project keys will return 403 and Tokenly will tell you so in the card.
 
 **I'm on a ChatGPT or Claude Max subscription. Does this show my subscription usage?**
-Yes — twice over. The local-tool cards show every token your CLI / Desktop app has produced. On top of that, the new **Live subscription quotas** layer reads your CLI's existing OAuth credentials and shows your *real* plan quota (5h / 7d / Opus / overage cap for Claude Max; 5h / 7d / credits balance for ChatGPT Pro / Plus / Team / Business; per-model-family quota for Gemini Free / Paid / Workspace). No extra setup — if you've signed into the CLI on this Mac, Tokenly picks it up.
+Yes — twice over. The local-tool cards show every token your CLI / Desktop app has produced. On top of that, the new **Live subscription quotas** layer reads your CLI's existing OAuth credentials and shows your *real* plan quota (5-hour burst window / weekly cap / Opus / overage cap for Claude Max; 5h / 7d / credits balance for ChatGPT Pro / Plus / Team / Business; per-model-family quota for Gemini Free / Paid / Workspace). No extra setup — if you've signed into the CLI on this Mac, Tokenly picks it up.
 
 For the consumer ChatGPT desktop app specifically: it encrypts local conversations at rest since mid-2024, so local extraction isn't possible there. Codex CLI / Desktop usage *is* tracked, and the OAuth quota pulls your ChatGPT plan window directly.
 
@@ -416,7 +416,7 @@ Tokenly fetches `trytokenly.app/pricing.json` on launch and every 24 hours. When
 Yes. Anthropic 5-minute cache writes are multiplied 1.25×, 1-hour writes 2×, cache reads 0.1×. OpenAI cached input is priced at 0.1×. OpenAI reasoning tokens are already rolled into output tokens — Tokenly does **not** double-count them.
 
 **Is there a Windows or Linux version?**
-No. Tokenly is a Mac-native indie tool.
+No. Tokenly is a Mac-only indie tool.
 
 **How do I uninstall?**
 Drag `Tokenly.app` to Trash. Optionally `rm -rf ~/Library/Application\ Support/Tokenly` to clear keys/prefs. Optionally `rm ~/Library/Preferences/app.tokenly.desktop.plist` for window state.
@@ -469,7 +469,7 @@ Requires an Apple Developer ID and notarization credentials set in the environme
 └── PROJECT.md               Complete build record — read before architectural changes
 ```
 
-Things Tokenly deliberately **does not** do: no telemetry, no ChatGPT / Claude.ai cookie scraping, no built-in AI assistant, no Windows/Linux builds, no in-app credit purchases.
+Things Tokenly deliberately **does not** do: no telemetry, no ChatGPT / Claude.ai cookie scraping, no Windows/Linux builds, no in-app credit purchases, and no proxying of chat or voice requests through Tokenly servers.
 
 ---
 
