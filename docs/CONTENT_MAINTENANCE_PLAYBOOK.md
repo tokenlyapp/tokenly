@@ -171,15 +171,34 @@ The script updates these child pages under the Tokenly Launch hub:
 - Tokenly Source Of Truth
 - Tokenly Content Maintenance Playbook
 
-Hermes also has a daily scheduled drift audit:
+Hermes also has scheduled Tokenly operations loops:
 
 ```text
-Cron job: Tokenly organization drift audit
+Cron job: Tokenly daily operations digest
 Job ID: e86216ff7c66
 Schedule: every 24h
 ```
 
-That job runs the same audit command, checks git status in the app/site/launch repos, and reports back to the origin conversation if the scan fails or if uncommitted drift is present.
+The daily job runs the content audit command, checks git status in the app/site/launch repos, inspects open PR/check state where credentials allow it, checks in-progress Notion rollout tasks, and reports a concise green/yellow/red operations digest to the origin conversation.
+
+```text
+Cron job: Tokenly weekly product audit
+Job ID: 18aad1d37fb1
+Schedule: Mondays at 15:00 UTC
+```
+
+The weekly job is read-only/proposal-only. It audits app architecture, privacy/security, performance/reliability, UX/product experience, and website/launch consistency, then returns a ranked improvement backlog. It must not implement code, push branches, create PRs, merge, deploy, publish, or schedule external posts without an explicit current user instruction.
+
+The app repo also includes the AI operations plan and Claude Code project context:
+
+```text
+docs/TOKENLY_AI_OPERATIONS_PLAN.md
+CLAUDE.md
+.claude/agents/
+.github/pull_request_template.md
+```
+
+These files define the specialist roster, approval tiers, PR reporting format, and Claude Code operating context for future Tokenly work.
 
 ## Current next cleanup targets
 
