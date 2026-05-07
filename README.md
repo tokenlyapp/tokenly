@@ -63,7 +63,7 @@ Every token and dollar your AI tools consume, across six providers, surfaced in 
 
 ## What is Tokenly?
 
-Tokenly is a native macOS menu-bar app that shows you — **live, in real time** — exactly how many tokens you're burning and how much money you're spending across every major AI service you use.
+Tokenly is a macOS menu-bar app that shows you — **live, in real time** — exactly how many tokens you're burning and how much money you're spending across every major AI service you use.
 
 It answers the question every AI-powered developer asks at the end of the month: *"Where did all that money go?"*
 
@@ -179,7 +179,7 @@ The trend sparkline also splits — prior half rendered dimmed, current half bri
 ### Budget alerts *(Tokenly Max)*
 
 - **Per-provider and overall daily budgets** — set in Settings, persisted locally.
-- **Three-stage notifications** — native macOS alerts at 50% / 80% / 100% of your daily budget, once per threshold per UTC day.
+- **Three-stage notifications** — macOS notifications at 50% / 80% / 100% of your daily budget, once per threshold per UTC day.
 - **Daily spend summary** — one notification at your chosen local hour (default 5 pm) summarizing the day's burn across every provider.
 - **Stateful ledger** — alerts are deduplicated via `~/Library/Application Support/Tokenly/alerts.json` so you never get spammed.
 
@@ -208,7 +208,7 @@ The trend sparkline also splits — prior half rendered dimmed, current half bri
 
 ### Voice AI *(Tokenly Max + AI)*
 
-- **⌘⇧V from anywhere** opens a frameless, always-on-top voice window that listens continuously with VAD turn-taking — speak, pause, hear the reply spoken back, keep going.
+- **⌘⇧V from anywhere** opens a frameless, always-on-top voice window that listens continuously with VAD turn-taking — speak, pause, hear the reply spoken back, keep going. The trailing letter is **configurable** in Settings → Voice AI hotkey if `V` conflicts with another app on your Mac.
 - **Voice plugins — sub-second answers without a web search round-trip.** The voice loop detects intent in your transcript and fetches live structured data directly, then hands it to the LLM to phrase. Built-in plugins (all free, most no-key):
   - **Weather + air quality** — Open-Meteo, defaults to your IP-detected city
   - **Calculator + unit conversion** — local, no network
@@ -416,7 +416,7 @@ Tokenly fetches `trytokenly.app/pricing.json` on launch and every 24 hours. When
 Yes. Anthropic 5-minute cache writes are multiplied 1.25×, 1-hour writes 2×, cache reads 0.1×. OpenAI cached input is priced at 0.1×. OpenAI reasoning tokens are already rolled into output tokens — Tokenly does **not** double-count them.
 
 **Is there a Windows or Linux version?**
-No. Tokenly is a Mac-native indie tool.
+No. Tokenly is a Mac menu-bar app.
 
 **How do I uninstall?**
 Drag `Tokenly.app` to Trash. Optionally `rm -rf ~/Library/Application\ Support/Tokenly` to clear keys/prefs. Optionally `rm ~/Library/Preferences/app.tokenly.desktop.plist` for window state.
@@ -469,7 +469,7 @@ Requires an Apple Developer ID and notarization credentials set in the environme
 └── PROJECT.md               Complete build record — read before architectural changes
 ```
 
-Things Tokenly deliberately **does not** do: no telemetry, no ChatGPT / Claude.ai cookie scraping, no built-in AI assistant, no Windows/Linux builds, no in-app credit purchases.
+Things Tokenly deliberately **does not** do: no telemetry, no ChatGPT / Claude.ai cookie scraping, no Windows/Linux builds, no in-app credit purchases.
 
 ---
 
