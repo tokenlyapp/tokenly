@@ -465,7 +465,6 @@ Requires an Apple Developer ID and notarization credentials set in the environme
 ├── app/components/          React UI (App, ProviderCard, SettingsSheet, atoms, tokens)
 ├── assets/                  Provider brand logos
 ├── build/                   Icons, tray templates, entitlements
-├── scripts/                 Helper scripts
 └── PROJECT.md               Complete build record — read before architectural changes
 ```
 
