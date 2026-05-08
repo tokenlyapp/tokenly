@@ -2,6 +2,28 @@
 // Ported from Claude Design; added a 'loading' status branch.
 const { useState: useStateC } = React;
 
+// Canonical token total across every provider shape Tokenly handles. Sources
+// disagree on field names — Anthropic returns cache_creation + cache_read,
+// OpenAI returns input_cached_tokens (we map to `cached`), OpenRouter returns
+// reasoning, local CLI sources can return any of these. Summing all six with
+// `|| 0` defaults works because no single provider populates two synonymous
+// fields at once (e.g. nothing returns both `cached` and `cache_creation`).
+//
+// Used by the card-header big-number total, the per-model row right-side
+// number, the per-project row right-side number, and the compare-period
+// split. Without this helper they each had their own slightly-different
+// formula and the per-model rows didn't add up to the header total for
+// Anthropic-heavy windows (cache_creation was missing from the header).
+function sumTokens(obj) {
+  if (!obj) return 0;
+  return (obj.input || 0)
+    + (obj.output || 0)
+    + (obj.cache_read || 0)
+    + (obj.cache_creation || 0)
+    + (obj.cached || 0)
+    + (obj.reasoning || 0);
+}
+
 // Compute a compare-mode split from the doubled-window data.
 // Returns null when compare mode is off or there's no breakdown to split.
 // Splits dailyBreakdown by calendar boundary (not by entry count) so sparse
@@ -15,7 +37,7 @@ function computeCompareSplit(data, compareWindowDays) {
   const sumIt = (rows) => {
     let tokens = 0, cost = 0, requests = 0;
     for (const r of rows) {
-      tokens += (r.input || 0) + (r.output || 0) + (r.cache_read || 0) + (r.cached || 0);
+      tokens += sumTokens(r);
       cost   += Number(r.cost) || 0;
       requests += Number(r.requests) || 0;
     }
@@ -47,6 +69,19 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
   const setBreakdownView = (v) => {
     setBreakdownViewRaw(v);
     try { localStorage.setItem(viewKey, v); } catch {}
+  };
+  // "tokens" | "cost" — controls the bars in the Daily tokens chart.
+  // Persisted per provider so the user's preference sticks across reloads.
+  // Default is "tokens" (the existing behavior); cost mode renders the same
+  // bars sourced from data.costTrend instead.
+  const chartViewKey = `tky.chartView.${provider.id}`;
+  const initialChartView = (() => {
+    try { return localStorage.getItem(chartViewKey) || 'tokens'; } catch { return 'tokens'; }
+  })();
+  const [chartView, setChartViewRaw] = useStateC(initialChartView);
+  const setChartView = (v) => {
+    setChartViewRaw(v);
+    try { localStorage.setItem(chartViewKey, v); } catch {}
   };
   const t = TOKENS.color;
 
@@ -223,23 +258,75 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
     // not real spend. The expanded footer label honors that.
     const isEstimate = !!(PROVIDER_COST_INFO[provider.id] && PROVIDER_COST_INFO[provider.id].emphasis);
 
-    const miniStats = provider.id === 'anthropic'
-      ? [
-          ['Input', fmt(data.totals.input)],
-          ['Output', fmt(data.totals.output)],
-          ['Cache Write', fmt(data.totals.cache_creation)],
-          ['Cache Read', fmt(data.totals.cache_read)],
-        ]
-      : [
-          ['Input', fmt(data.totals.input)],
-          ['Cached', fmt(data.totals.cached || 0)],
-          ['Output', fmt(data.totals.output)],
-          ['Requests', fmt(data.totals.requests)],
-        ];
+    // Pick KPI tiles based on which token fields the provider actually
+    // returned, not on the provider id. Claude Code (local CLI) returns
+    // the same cache_creation + cache_read shape as the Anthropic API,
+    // so it should show those tiles too instead of falling into the
+    // OpenAI-style "Cached: 0" branch and hiding the largest token
+    // categories on the card.
+    const T = data.totals;
+    const hasAnthropicCache = (T.cache_creation || 0) > 0 || (T.cache_read || 0) > 0;
+    const hasOpenAICache    = !hasAnthropicCache && (T.cached || 0) > 0;
+    const hasReasoning      = (T.reasoning || 0) > 0;
+    let miniStats;
+    if (hasAnthropicCache) {
+      miniStats = [
+        ['Input',       fmt(T.input)],
+        ['Output',      fmt(T.output)],
+        ['Cache Write', fmt(T.cache_creation || 0)],
+        ['Cache Read',  fmt(T.cache_read || 0)],
+      ];
+    } else if (hasOpenAICache) {
+      miniStats = [
+        ['Input',    fmt(T.input)],
+        ['Cached',   fmt(T.cached || 0)],
+        ['Output',   fmt(T.output)],
+        ['Requests', fmt(T.requests)],
+      ];
+    } else if (hasReasoning) {
+      miniStats = [
+        ['Input',     fmt(T.input)],
+        ['Output',    fmt(T.output)],
+        ['Reasoning', fmt(T.reasoning || 0)],
+        ['Requests',  fmt(T.requests)],
+      ];
+    } else {
+      miniStats = [
+        ['Input',    fmt(T.input)],
+        ['Output',   fmt(T.output)],
+        ['Requests', fmt(T.requests)],
+        ['Cost',     fmtMoney(T.cost || 0)],
+      ];
+    }
 
-    const trend = data.trend || [];
-    const trendMax = Math.max(1, ...trend);
+    // Daily-bars data source switches between token counts and dollar
+    // values per chartView. The API parsers (OpenAI/Anthropic/OpenRouter)
+    // emit costTrend directly; the local-CLI parsers (Claude Code, Codex,
+    // Gemini CLI) only emit `trend` but include per-day cost in
+    // dailyBreakdown — derive costTrend from that when needed so all
+    // providers can flip between units.
+    const tokensTrend = data.trend || [];
+    let costTrend = null;
+    if (Array.isArray(data.costTrend) && data.costTrend.length === tokensTrend.length) {
+      costTrend = data.costTrend;
+    } else if (Array.isArray(data.dailyBreakdown) && data.dailyBreakdown.length === tokensTrend.length) {
+      costTrend = data.dailyBreakdown.map((d) => Number(d?.cost) || 0);
+    }
+    const canShowCost = !!costTrend && costTrend.some((v) => Number(v) > 0);
+    // If the user previously selected cost mode but the current data has no
+    // dollar values (e.g. costTrend missing), silently fall back to tokens
+    // for this render — saved pref still applies once data has dollars.
+    const effectiveChartView = (chartView === 'cost' && canShowCost) ? 'cost' : 'tokens';
+    const trend = effectiveChartView === 'cost' ? costTrend : tokensTrend;
+    const trendMax = Math.max(effectiveChartView === 'cost' ? 0.0001 : 1, ...trend);
     const dailyAvg = trend.length ? trend.reduce((a, b) => a + b, 0) / trend.length : 0;
+    const fmtBar = (v) => effectiveChartView === 'cost' ? fmtMoney(v) : fmt(v);
+    const barUnit = effectiveChartView === 'cost' ? '' : ' tokens';
+    // Header label honors local-source vs API-source semantics:
+    // "$ value" reads true on estimate cards (token value, not real spend),
+    // "spend" reads true on API cards (actual billed dollars).
+    const costLabel = isEstimate ? 'Daily $ value' : 'Daily spend';
+    const tokensLabel = 'Daily tokens';
 
     // In compare mode, the trend is over the doubled window. Anything before
     // the midpoint is "prior", anything from the midpoint on is "current".
@@ -560,11 +647,47 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
             border: `1px solid ${t.cardBorder}`,
             borderRadius: 8, padding: '8px 10px 8px', marginBottom: 10,
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, gap: 8 }}>
               <div style={{ fontSize: 9, color: t.textMute, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                Daily tokens{compareSplitIdx ? ' · prior vs current' : ''}
+                {(effectiveChartView === 'cost' ? costLabel : tokensLabel)}{compareSplitIdx ? ' · prior vs current' : ''}
               </div>
-              <div style={{ fontSize: 10, color: t.textDim, fontVariantNumeric: 'tabular-nums' }}>avg {fmt(dailyAvg)}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {canShowCost && (
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      display: 'inline-flex', background: 'rgba(0,0,0,0.3)',
+                      border: `1px solid ${t.cardBorder}`, borderRadius: 6, padding: 1.5,
+                    }}
+                    role="tablist"
+                    aria-label="Chart units"
+                  >
+                    {[
+                      { v: 'tokens', label: 'Tokens' },
+                      { v: 'cost',   label: '$' },
+                    ].map((opt) => {
+                      const active = effectiveChartView === opt.v;
+                      return (
+                        <button
+                          key={opt.v}
+                          onClick={(e) => { e.stopPropagation(); setChartView(opt.v); }}
+                          role="tab"
+                          aria-selected={active}
+                          style={{
+                            background: active ? t.accent : 'transparent',
+                            color: active ? '#fff' : t.textMute,
+                            border: 0, padding: '2px 7px', borderRadius: 4,
+                            fontSize: 9, fontWeight: 600, cursor: 'pointer',
+                            fontFamily: 'inherit', letterSpacing: 0.2,
+                            lineHeight: 1.4,
+                          }}
+                        >{opt.label}</button>
+                      );
+                    })}
+                  </div>
+                )}
+                <div style={{ fontSize: 10, color: t.textDim, fontVariantNumeric: 'tabular-nums' }}>avg {fmtBar(dailyAvg)}</div>
+              </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 56, position: 'relative' }}>
               {trend.map((v, i) => {
@@ -582,7 +705,7 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
                 return (
                   <div
                     key={i}
-                    title={fmt(v) + ' tokens' + (isPrior ? ' (prior period)' : '')}
+                    title={fmtBar(v) + barUnit + (isPrior ? ' (prior period)' : '')}
                     style={{
                       flex: 1, height: '100%',
                       display: 'flex', flexDirection: 'column',
@@ -597,7 +720,7 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
                         fontVariantNumeric: 'tabular-nums', fontWeight: isToday ? 600 : 500,
                         opacity: isPrior ? 0.7 : 1,
                         whiteSpace: 'nowrap',
-                      }}>{fmt(v)}</span>
+                      }}>{fmtBar(v)}</span>
                     )}
                     <div style={{
                       width: '100%',
@@ -712,7 +835,7 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
         <div>
           {breakdownView === 'project' && Array.isArray(data.byProject) && data.byProject.length > 0 ? (
             data.byProject.slice(0, 12).map((p, i, arr) => {
-              const tokens = (p.input || 0) + (p.output || 0) + (p.cache_read || 0) + (p.cached || 0);
+              const tokens = sumTokens(p);
               const topModel = (p.models && p.models[0]) ? p.models[0].model : null;
               const sourceMix = p.entrypoints
                 ? Object.entries(p.entrypoints).sort((a, b) => b[1] - a[1])
@@ -761,18 +884,24 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
                 </div>
               )}
               {(data.models || []).slice(0, 12).map((m, i, arr) => {
-                // Total = input + output + cache writes + cache reads. Surface
-                // every component in the meta line so the user can see how the
-                // big right-side number is composed (cache reads are the usual
-                // silent culprit when totals look way bigger than in/out alone).
-                const cacheWrite = (m.cache_creation || m.cached || 0);
+                // Total uses the canonical sumTokens() so every model row
+                // adds up to the card-header total. Each component is also
+                // surfaced in the meta line so the user can see how the big
+                // right-side number is composed (cache reads + reasoning are
+                // the usual silent culprits when totals look way bigger than
+                // in/out alone).
+                const cacheWrite = (m.cache_creation || 0);
                 const cacheRead  = (m.cache_read || 0);
-                const tokens = (m.input || 0) + (m.output || 0) + cacheRead + cacheWrite;
+                const cachedIn   = (m.cached || 0);
+                const reasoning  = (m.reasoning || 0);
+                const tokens     = sumTokens(m);
                 const metaParts = [
                   `in ${fmt(m.input || 0)}`,
                   `out ${fmt(m.output || 0)}`,
                   cacheWrite > 0 ? `cw ${fmt(cacheWrite)}` : null,
                   cacheRead  > 0 ? `cr ${fmt(cacheRead)}`  : null,
+                  cachedIn   > 0 ? `cached ${fmt(cachedIn)}` : null,
+                  reasoning  > 0 ? `reasoning ${fmt(reasoning)}` : null,
                   m.requests > 0 ? `${fmt(m.requests)} req` : null,
                 ];
                 const meta = metaParts.filter(Boolean).join(' · ');
@@ -879,7 +1008,7 @@ function ProviderCard({ provider, data, expanded, onToggle, onOpenSettings, onOp
         </>
       );
     }
-    const fullTokens = (data.totals.input || 0) + (data.totals.output || 0) + (data.totals.cache_read || 0) + (data.totals.cached || 0);
+    const fullTokens = sumTokens(data.totals);
     const info = PROVIDER_COST_INFO[provider.id];
     const isEstimate = !!(info && info.emphasis);
 
