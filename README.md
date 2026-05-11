@@ -70,7 +70,7 @@ It answers the question every AI-powered developer asks at the end of the month:
 Three use cases it covers:
 
 1. **Subscription usage** (Claude Max, ChatGPT Team, Cursor-adjacent tools) — see the list-price value of tokens you're burning inside a flat-rate plan.
-2. **Admin-API spend** (OpenAI, Anthropic, OpenRouter) — authoritative per-day dollars without waiting for the month-end invoice.
+2. **Admin-API spend** (OpenAI, Anthropic, OpenRouter) — connect an admin or management key and Tokenly pulls billing directly from the provider account. You get actual billed dollars by day and model, separate from subscription/list-price estimates, so API spikes show up while you can still do something about them instead of waiting for the month-end invoice.
 3. **Direct AI access** *(Max + AI)* — chat with OpenAI / Claude / Gemini in-app, talk to a hands-free voice AI with `⌘⇧V` from anywhere, web search built in, and conversation memory that's aware of your live Tokenly usage data.
 
 Every card is labeled either **list-price estimate** (amber, tokens-first) or **actual billed spend** (green, dollars-first) so you always know which number is real money.
@@ -99,8 +99,8 @@ If you've signed into the Claude / Codex / Gemini CLI on this Mac, Tokenly reads
 
 | Provider | What you get | Endpoint |
 |---|---|---|
-| **Claude Pro / Max** | 5h session window · 7d weekly window · Opus-specific quota · Overage cap (e.g. `$24.18 of $40`) · plan tier | `api.anthropic.com/api/oauth/usage` |
-| **ChatGPT Pro / Plus / Team / Business** | 5h session window · 7d weekly window · credits balance · plan tier | `chatgpt.com/backend-api/wham/usage` |
+| **Claude Pro / Max** | Rolling 5h burst window · weekly / model-specific quota rows when returned · overage cap (e.g. `$24.18 of $40`) · plan tier | `api.anthropic.com/api/oauth/usage` |
+| **ChatGPT Pro / Plus / Team / Business** | Active plan quota windows when returned · credits balance · plan tier | `chatgpt.com/backend-api/wham/usage` |
 | **Gemini Free / Paid / Workspace** | Per-model-family quota (Pro / Flash / Flash Lite) · tier | `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` |
 
 Each row gets a brand-themed progress bar and a "Resets in 3h 17m" countdown. Token refresh is automatic — Tokenly self-heals across hours, days, and OS restarts without you ever needing to re-run `claude` / `codex` / `gemini`.
@@ -402,7 +402,7 @@ No. If you don't use Claude Code, Codex, or Gemini CLI, those cards just stay em
 No — the usage/cost endpoints require **admin**-scoped keys. For OpenAI that's `sk-admin-…`; for Anthropic it's `sk-ant-admin-…`. OpenRouter requires a management key. Project keys will return 403 and Tokenly will tell you so in the card.
 
 **I'm on a ChatGPT or Claude Max subscription. Does this show my subscription usage?**
-Yes — twice over. The local-tool cards show every token your CLI / Desktop app has produced. On top of that, the new **Live subscription quotas** layer reads your CLI's existing OAuth credentials and shows your *real* plan quota (5h / 7d / Opus / overage cap for Claude Max; 5h / 7d / credits balance for ChatGPT Pro / Plus / Team / Business; per-model-family quota for Gemini Free / Paid / Workspace). No extra setup — if you've signed into the CLI on this Mac, Tokenly picks it up.
+Yes — twice over. The local-tool cards show every token your CLI / Desktop app has produced. On top of that, the new **Live subscription quotas** layer reads your CLI's existing OAuth credentials and shows the live quota data each provider exposes: Claude's rolling 5-hour burst window plus any weekly/model-specific/overage rows the endpoint returns, ChatGPT's active plan windows and credits balance, and Gemini's per-model-family quotas. No extra setup — if you've signed into the CLI on this Mac, Tokenly picks it up.
 
 For the consumer ChatGPT desktop app specifically: it encrypts local conversations at rest since mid-2024, so local extraction isn't possible there. Codex CLI / Desktop usage *is* tracked, and the OAuth quota pulls your ChatGPT plan window directly.
 

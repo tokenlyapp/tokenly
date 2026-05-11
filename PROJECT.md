@@ -8,7 +8,7 @@ This document is the complete build record. Read it before making architectural 
 
 ## 0. Current state (session handoff)
 
-**Current shipped version:** `2.1.2` — on GitHub Releases + Netlify Blobs. Auto-update pipeline live.
+**Current target version:** `2.1.3` — package metadata and release docs are being prepared for the next GitHub Releases + Netlify Blobs build. Auto-update pipeline live.
 
 **Recent shipped work:**
 - **First-dismiss tray onboarding** — frameless transparent overlay window that appears below the menu-bar tray icon the first (and only the first) time a user dismisses the popover. Pulsing T glyph + bobbing arrow + floating message card explaining where Tokenly lives. `prefs.json:trayOnboardingShown` flag persists across sessions; main.js spawns a `focusable: false` BrowserWindow positioned via `tray.getBounds()`, auto-dismisses after 8s. New `index.html` mode `tray-onboarding`.

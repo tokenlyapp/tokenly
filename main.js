@@ -948,11 +948,11 @@ ipcMain.handle('alerts:maybe-fire-summary', (_e, payload) => {
 //
 // Free keeps the three local sources (Claude Code, Codex CLI, Gemini CLI),
 // Settings, and the read-only pricing sheet. Max unlocks OpenAI API,
-// Anthropic API, OpenRouter, and budget alerts. Max + AI is a monthly
-// subscription that adds Tokenly Chat (text + web search + voice).
+// Anthropic API, OpenRouter, and budget alerts. Max + AI is a one-time
+// lifetime tier that adds Tokenly Chat (text + web search + voice).
 //
 // Activation: the renderer passes a Stripe identifier (one-time checkout
-// session_id for max, subscription session_id or sub_id for max-ai). We POST
+// session_id for max or max-ai; legacy subscription ids still verify). We POST
 // it to the Netlify edge function at /api/license/verify, which calls Stripe
 // directly and returns the license metadata on a paid, non-refunded session.
 
