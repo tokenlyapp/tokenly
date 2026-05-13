@@ -14,3 +14,9 @@ build/icon.iconset/
 
 # Launch / marketing playbook lives outside the repo at ~/Documents/Tokenly/launch/
 /marketing/
+
+# Claude Code local project settings
+.claude/
+
+# Netlify CLI local state
+.netlify/
